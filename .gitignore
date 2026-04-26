@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.so
+
+.pytest_cache/
+.venv/
+venv/
+
+.env
+configs/config.yaml
+
+*.log
+.DS_Store
+
+# Generated runtime output
+data/clips_raw/
+data/clips_cropped/
+data/goals/*.json
+data/state/*.json
+data/state/*.log
+data/tmp/
+
+# Local sample recordings
+app/old rec/

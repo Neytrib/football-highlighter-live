@@ -1,0 +1,56 @@
+api:
+  poll_interval_seconds: 6
+  unfold_goals: true
+  timeout_seconds: 10
+  max_retries: 5
+  backoff_base_seconds: 1.5
+
+stream:
+  read_fps_for_ocr: 2
+  reconnect_delay_seconds: 3
+  rolling_buffer_seconds: 300
+  segment_seconds: 2
+
+highlight:
+  pre_goal_seconds: 45
+  post_goal_seconds: 30
+  timer_match_tolerance_seconds: 2
+  require_score_change_confirmation: true
+
+vision:
+  timer_roi: [0.0, 0.0, 0.28, 0.12]
+  scoreboard_roi: [0.0, 0.0, 1.0, 0.16]
+  ocr_confidence_min: 0.55
+
+stream_only:
+  enabled: false
+  score_roi: [0.0, 0.0, 1.0, 0.22]
+  home_score_roi: [0.46, 0.0, 0.06, 0.14]
+  away_score_roi: [0.52, 0.0, 0.06, 0.14]
+  auto_locate_score_rois: true
+  auto_locate_frames: 30
+  change_threshold: 18.0
+  stable_threshold: 6.0
+  stable_frames: 3
+  cooldown_seconds: 15
+  match_id: 0
+  home_name: "stream_home"
+  away_name: "stream_away"
+
+crop:
+  enabled: true
+  aspect_ratio: "1:1"
+  detector_model_path: "models/soccer_yolov8s.pt"
+  detection_frame_stride: 3
+  smoothing_alpha: 0.25
+  target_class_names: ["ball"]
+  min_confidence: 0.15
+  background_workers: 1
+  output_suffix: "_crop1x1"
+
+output:
+  raw_dir: "data/clips_raw"
+  cropped_dir: "data/clips_cropped"
+  goals_dir: "data/goals"
+  state_dir: "data/state"
+  tmp_dir: "data/tmp"
