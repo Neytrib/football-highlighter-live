@@ -5,6 +5,7 @@
     "dev": "bash ./dev.sh",
     "dev:clips": "DRY_RUN=0 bash ./dev.sh",
     "engine": "bash ./dev.sh --engine-only",
-    "engine:stop": "docker stop football-acestream"
+    "engine:stop": "docker stop football-acestream",
+    "highlighter": ".venv/bin/python -m app.main --config configs/config.yaml --log-level INFO"
   }
 }

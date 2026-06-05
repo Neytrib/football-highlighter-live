@@ -2,12 +2,12 @@
 
 `football-highlighter-live` is a Python service that watches a live football stream, detects goal moments, and writes highlight clips plus structured goal metadata.
 
-It supports two operating modes:
+It ships with a local dashboard and supports two operating modes:
 
 - `API mode`: poll the football-data.org live matches API, detect newly reported goals, and align them to the on-screen timer before clipping.
 - `Stream-only mode`: skip the external API and detect confirmed score-value changes directly from the broadcast scoreboard.
 
-The project is a backend CLI service. It does not ship a web UI.
+The dashboard is local-only and is served by `npm run dev`.
 
 ## What The Pipeline Does
 
@@ -53,6 +53,7 @@ Use this when you only have the broadcast stream.
 - `app/vision/`: timer OCR, scoreboard OCR, match resolution, score change detection, clip cropping
 - `app/api/`: football-data client and goal detection
 - `app/storage/`: JSON-backed runtime state and goal event stores
+- `app/ui/`: local dashboard API, process supervisor, clip library, and static frontend
 - `configs/config.example.yaml`: baseline configuration
 - `models/soccer_yolov8s.pt`: object detector used for optional cropped highlights
 - `tests/`: unit tests for timer parsing, goal dedup, clip windows, config loading, match resolution, cropper selection, and score-change detection
@@ -101,9 +102,37 @@ Important sections:
 - `score_ocr`: score digit stability, confidence, Tesseract command, and temporary OCR folder
 - `var`: VAR/no-goal watch window and reversal clip length
 - `crop`: cropped highlight behavior, YOLO model path, target classes, worker count
-- `output`: raw clip, cropped clip, state, goal, and temp directories
+- `output`: raw clip, cropped clip, custom categories, state, goal, and temp directories
 
-## Running
+## Running The Local UI
+
+Start the local engine, UI, and highlighter in dry-run mode:
+
+```bash
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:5174
+```
+
+The dashboard shows AceStream/highlighter status, recent JSON logs, a stream preview/open action, and a clip library for raw, cropped, uncertain, VAR, and custom categories. You can add a stream by pasting a bare AceStream ID, an `acestream://...` link, or an existing local `getstream?id=...` URL into the Stream panel. Rename, delete, and move actions change files directly on disk and are guarded by backend path checks.
+
+To create real clips instead of dry-run events:
+
+```bash
+npm run dev:clips
+```
+
+Useful UI environment variables:
+
+- `UI_HOST`: dashboard bind host, default `127.0.0.1`
+- `UI_PORT`: dashboard port, default `5174`
+- `DRY_RUN`: set `0` to enable clipping
+
+## Running The CLI Directly
 
 Default run:
 
@@ -160,6 +189,7 @@ Generated runtime files are intentionally ignored by Git.
 - `data/clips_cropped/`: cropped highlight clips
 - `data/clips_uncertain/`: raw candidate clips where OCR/score transition was not strong enough to confirm a goal
 - `data/clips_var/`: VAR/no-goal score-reversal clips
+- `data/clips_categories/`: custom dashboard categories backed by folders
 - `data/goals/<match_id>.json`: append-or-update event history per match
 - `data/state/runtime_state.json`: dedup state, processed goals, score cache, match lock
 - `data/state/runtime.log`: structured runtime logs

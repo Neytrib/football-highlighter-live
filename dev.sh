@@ -11,6 +11,8 @@ PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 CONFIG_PATH="${CONFIG_PATH:-configs/config.yaml}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 DRY_RUN="${DRY_RUN:-1}"
+UI_HOST="${UI_HOST:-127.0.0.1}"
+UI_PORT="${UI_PORT:-5174}"
 
 ENGINE_ONLY=0
 if [[ "${1:-}" == "--engine-only" ]]; then
@@ -74,10 +76,21 @@ mkdir -p data/state data/tmp
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$ROOT_DIR/data/tmp/matplotlib}"
 mkdir -p "$MPLCONFIGDIR"
 
-APP_ARGS=(-m app.main --config "$CONFIG_PATH" --log-level "$LOG_LEVEL")
+APP_ARGS=(
+  -m app.ui.server
+  --config "$CONFIG_PATH"
+  --log-level "$LOG_LEVEL"
+  --host "$UI_HOST"
+  --port "$UI_PORT"
+  --engine-url "$ENGINE_URL"
+  --engine-container "$CONTAINER_NAME"
+  --engine-image "$ACESTREAM_IMAGE"
+)
 if [[ "$DRY_RUN" != "0" ]]; then
   APP_ARGS+=(--dry-run)
+else
+  APP_ARGS+=(--live-clips)
 fi
 
-echo "Starting football highlighter..."
+echo "Starting football highlighter UI..."
 exec "$PYTHON_BIN" "${APP_ARGS[@]}" "$@"

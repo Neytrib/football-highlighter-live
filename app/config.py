@@ -93,6 +93,7 @@ class OutputConfig:
     cropped_dir: str = "data/clips_cropped"
     uncertain_dir: str = "data/clips_uncertain"
     var_dir: str = "data/clips_var"
+    custom_categories_dir: str = "data/clips_categories"
     goals_dir: str = "data/goals"
     state_dir: str = "data/state"
     tmp_dir: str = "data/tmp"
@@ -121,6 +122,7 @@ class AppConfig:
             self.output.cropped_dir,
             self.output.uncertain_dir,
             self.output.var_dir,
+            self.output.custom_categories_dir,
             self.output.goals_dir,
             self.output.state_dir,
             self.output.tmp_dir,

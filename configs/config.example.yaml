@@ -65,6 +65,7 @@ output:
   cropped_dir: "data/clips_cropped"
   uncertain_dir: "data/clips_uncertain"
   var_dir: "data/clips_var"
+  custom_categories_dir: "data/clips_categories"
   goals_dir: "data/goals"
   state_dir: "data/state"
   tmp_dir: "data/tmp"

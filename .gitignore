@@ -15,6 +15,9 @@ configs/config.yaml
 # Generated runtime output
 data/clips_raw/
 data/clips_cropped/
+data/clips_uncertain/
+data/clips_var/
+data/clips_categories/
 data/goals/*.json
 data/state/*.json
 data/state/*.log

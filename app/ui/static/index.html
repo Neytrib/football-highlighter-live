@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Football Highlighter</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Football Highlighter</h1>
+        <p id="serverLine">Starting local dashboard</p>
+      </div>
+      <div class="top-actions">
+        <button id="refreshAll" class="button primary" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="status-strip" aria-label="Status">
+        <div class="status-item">
+          <span>Engine</span>
+          <strong id="engineState">unknown</strong>
+        </div>
+        <div class="status-item">
+          <span>Highlighter</span>
+          <strong id="highlighterState">unknown</strong>
+        </div>
+        <div class="status-item">
+          <span>Mode</span>
+          <strong id="modeState">unknown</strong>
+        </div>
+        <div class="status-item">
+          <span>Stream</span>
+          <strong id="streamState">unknown</strong>
+        </div>
+      </section>
+
+      <section class="main-grid">
+        <div class="panel stream-panel">
+          <div class="panel-head">
+            <h2>Stream</h2>
+            <div class="button-row">
+              <button id="openStream" class="button" type="button">Open</button>
+              <button id="copyStream" class="button" type="button">Copy</button>
+            </div>
+          </div>
+          <form id="streamForm" class="stream-form">
+            <input id="streamIdInput" type="text" autocomplete="off" placeholder="AceStream ID">
+            <button class="button primary" type="submit">Set Stream</button>
+          </form>
+          <video id="streamPreview" controls muted playsinline></video>
+          <div id="streamHint" class="hint">No stream configured</div>
+        </div>
+
+        <div class="panel controls-panel">
+          <div class="panel-head">
+            <h2>Controls</h2>
+            <span id="lastUpdated" class="subtle">Waiting</span>
+          </div>
+          <div class="control-groups">
+            <div class="control-group">
+              <h3>AceStream</h3>
+              <div class="button-row">
+                <button class="button success" data-command="/api/engine/start" type="button">Start</button>
+                <button class="button danger" data-command="/api/engine/stop" type="button">Stop</button>
+                <button class="button" data-command="/api/engine/restart" type="button">Restart</button>
+              </div>
+            </div>
+            <div class="control-group">
+              <h3>Highlighter</h3>
+              <div class="button-row">
+                <button class="button success" data-command="/api/highlighter/start" type="button">Start</button>
+                <button class="button danger" data-command="/api/highlighter/stop" type="button">Stop</button>
+                <button class="button" data-command="/api/highlighter/restart" type="button">Restart</button>
+              </div>
+            </div>
+          </div>
+          <div id="commandMessage" class="message" role="status"></div>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="panel clips-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Clips</h2>
+              <span id="clipCount" class="subtle">0 clips</span>
+            </div>
+            <form id="categoryForm" class="category-form">
+              <input id="categoryName" type="text" autocomplete="off" placeholder="New category">
+              <button class="button primary" type="submit">Create</button>
+            </form>
+          </div>
+          <div id="categoryTabs" class="tabs" role="tablist"></div>
+          <div id="clipList" class="clip-list"></div>
+        </div>
+
+        <div class="panel logs-panel">
+          <div class="panel-head">
+            <h2>Logs</h2>
+            <button id="refreshLogs" class="button" type="button">Reload</button>
+          </div>
+          <div id="logList" class="log-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-box">
+        <h2 id="modalTitle">Confirm</h2>
+        <p id="modalText"></p>
+        <input id="modalInput" type="text" autocomplete="off">
+        <div class="modal-actions">
+          <button id="modalCancel" class="button" type="button">Cancel</button>
+          <button id="modalConfirm" class="button primary" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
