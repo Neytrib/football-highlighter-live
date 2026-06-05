@@ -1,0 +1,10 @@
+{
+  "name": "football-highlighter-live",
+  "private": true,
+  "scripts": {
+    "dev": "bash ./dev.sh",
+    "dev:clips": "DRY_RUN=0 bash ./dev.sh",
+    "engine": "bash ./dev.sh --engine-only",
+    "engine:stop": "docker stop football-acestream"
+  }
+}
