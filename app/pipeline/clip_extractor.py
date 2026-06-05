@@ -107,3 +107,74 @@ class ClipExtractor:
             self.logger.debug("clip extraction with re-encode succeeded", extra={"extra": {"output_path": str(output)}})
 
         return str(output)
+
+    def extract_clip_from_file(
+        self,
+        *,
+        input_path: str,
+        start_seconds: float,
+        end_seconds: float,
+        output_path: str,
+    ) -> str:
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        start = max(0.0, float(start_seconds))
+        duration = max(1.0, float(end_seconds) - start)
+        self.logger.info(
+            "extracting clip from input file",
+            extra={
+                "extra": {
+                    "input_path": input_path,
+                    "output_path": str(output),
+                    "start_seconds": round(start, 3),
+                    "duration": round(duration, 3),
+                }
+            },
+        )
+
+        cmd_copy = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            f"{start:.3f}",
+            "-i",
+            input_path,
+            "-t",
+            f"{duration:.3f}",
+            "-c",
+            "copy",
+            str(output),
+        ]
+        cmd_reencode = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            f"{start:.3f}",
+            "-i",
+            input_path,
+            "-t",
+            f"{duration:.3f}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
+            str(output),
+        ]
+
+        try:
+            subprocess.run(cmd_copy, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            self.logger.warning("copy file clip extraction failed; re-encoding", extra={"extra": {"error": str(exc)}})
+            subprocess.run(cmd_reencode, check=True)
+        return str(output)

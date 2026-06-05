@@ -21,9 +21,14 @@ from app.stream.recorder import StreamRecorder
 from app.stream.rolling_buffer import RollingBuffer
 from app.vision.cropper import ClipCropper
 from app.vision.match_resolver import MatchResolver
-from app.vision.score_change_detector import ScoreChangeDetector, ScoreChangeEvent
+from app.vision.score_change_detector import ScoreChangeDetector, ScoreChangeEvent, write_score_roi_previews
 from app.vision.scoreboard_ocr import ScoreboardOCR
 from app.vision.timer_ocr import TimerOCR
+
+try:
+    import cv2  # type: ignore
+except ImportError:  # pragma: no cover - optional runtime dependency
+    cv2 = None
 
 
 class Orchestrator:
@@ -89,18 +94,7 @@ class Orchestrator:
         self.score_change_detector: Optional[ScoreChangeDetector] = None
         if self.config.stream_only.enabled:
             self.stream_only_match = self._build_stream_only_match()
-            self.score_change_detector = ScoreChangeDetector(
-                home_score_roi=self.config.stream_only.home_score_roi,
-                away_score_roi=self.config.stream_only.away_score_roi,
-                search_roi=self.config.stream_only.score_roi,
-                auto_locate_score_rois=self.config.stream_only.auto_locate_score_rois,
-                auto_locate_frames=self.config.stream_only.auto_locate_frames,
-                change_threshold=self.config.stream_only.change_threshold,
-                stable_threshold=self.config.stream_only.stable_threshold,
-                stable_frames=self.config.stream_only.stable_frames,
-                cooldown_seconds=self.config.stream_only.cooldown_seconds,
-                logger=self.logger,
-            )
+            self.score_change_detector = self._build_score_change_detector()
 
         self.logger.info(
             "orchestrator initialized",
@@ -125,6 +119,115 @@ class Orchestrator:
             self._run_stream_only()
             return
         self._run_api_mode()
+
+    def run_input_video(self, input_path: str) -> None:
+        if cv2 is None:
+            raise RuntimeError("opencv-python is required for offline video mode")
+        if self.score_change_detector is None:
+            self.stream_only_match = self._build_stream_only_match()
+            self.score_change_detector = self._build_score_change_detector()
+        if self.stream_only_match is None:
+            self.stream_only_match = self._build_stream_only_match()
+
+        cap = cv2.VideoCapture(input_path)
+        if not cap.isOpened():
+            raise RuntimeError(f"Unable to open input video: {input_path}")
+
+        source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
+        source_fps = source_fps if source_fps > 0 else 25.0
+        sample_interval = 1.0 / max(0.25, float(self.config.stream.read_fps_for_ocr))
+        next_sample_ts = 0.0
+        frame_idx = 0
+        created = 0
+
+        self.logger.info(
+            "offline input video processing started",
+            extra={
+                "extra": {
+                    "input_path": input_path,
+                    "source_fps": round(source_fps, 3),
+                    "sample_fps": self.config.stream.read_fps_for_ocr,
+                }
+            },
+        )
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                video_ts = frame_idx / source_fps
+                frame_idx += 1
+                if video_ts + 0.0001 < next_sample_ts:
+                    continue
+                next_sample_ts = video_ts + sample_interval
+
+                event = self.score_change_detector.process(frame, video_ts)
+                if event is None:
+                    continue
+                goal_id = self._enqueue_stream_only_event(self.stream_only_match, event)
+                if goal_id is None:
+                    continue
+                self._extract_pending_from_input_file(
+                    match=self.stream_only_match,
+                    goal_id=goal_id,
+                    input_path=input_path,
+                )
+                created += 1
+        finally:
+            cap.release()
+
+        while self.crop_futures:
+            self._drain_crop_futures()
+            time.sleep(0.25)
+        self.logger.info("offline input video processing finished", extra={"extra": {"events_created": created}})
+
+    def write_score_calibration_previews(self, *, output_dir: str, input_video: Optional[str] = None) -> list[str]:
+        if cv2 is None:
+            raise RuntimeError("opencv-python is required for score ROI calibration")
+
+        source = input_video or self.config.stream_url
+        if not source:
+            raise RuntimeError("Calibration needs --input-video or STREAM_URL")
+
+        cap = cv2.VideoCapture(source)
+        if not cap.isOpened():
+            raise RuntimeError(f"Unable to open calibration source: {source}")
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        if not ok:
+            raise RuntimeError("Unable to read a calibration frame")
+
+        written = write_score_roi_previews(
+            frame=frame,
+            output_dir=output_dir,
+            search_roi=self.config.stream_only.score_roi,
+            home_score_roi=self.config.stream_only.home_score_roi,
+            away_score_roi=self.config.stream_only.away_score_roi,
+        )
+        self.logger.info("score ROI calibration previews written", extra={"extra": {"files": written}})
+        return written
+
+    def _build_score_change_detector(self) -> ScoreChangeDetector:
+        return ScoreChangeDetector(
+            home_score_roi=self.config.stream_only.home_score_roi,
+            away_score_roi=self.config.stream_only.away_score_roi,
+            search_roi=self.config.stream_only.score_roi,
+            auto_locate_score_rois=self.config.stream_only.auto_locate_score_rois,
+            auto_locate_frames=self.config.stream_only.auto_locate_frames,
+            change_threshold=self.config.stream_only.change_threshold,
+            stable_threshold=self.config.stream_only.stable_threshold,
+            stable_frames=self.config.stream_only.stable_frames,
+            cooldown_seconds=self.config.stream_only.cooldown_seconds,
+            score_stable_frames=self.config.score_ocr.stable_frames,
+            min_confidence=self.config.score_ocr.min_confidence,
+            tesseract_cmd=self.config.score_ocr.tesseract_cmd,
+            temp_dir=self.config.score_ocr.temp_dir,
+            var_watch_seconds=self.config.var.watch_seconds,
+            uncertain_cooldown_seconds=self.config.score_ocr.uncertain_cooldown_seconds,
+            logger=self.logger,
+        )
 
     def _run_stream_only(self) -> None:
         if self.score_change_detector is None or self.stream_only_match is None:
@@ -162,7 +265,7 @@ class Orchestrator:
                 frame_ts, frame = next(frame_iter)
                 event = self.score_change_detector.process(frame, frame_ts)
                 if event is not None:
-                    self._enqueue_stream_only_goal(stream_match, event)
+                    self._enqueue_stream_only_event(stream_match, event)
 
                 if event is not None or self.pending_jobs:
                     self._trigger_jobs(
@@ -280,29 +383,42 @@ class Orchestrator:
             goals=[],
         )
 
-    def _enqueue_stream_only_goal(self, match: MatchSnapshot, event: ScoreChangeEvent) -> None:
-        goal_id = f"{match.match_id}_stream_{int(event.goal_ts_unix * 1000)}"
+    def _enqueue_stream_only_event(self, match: MatchSnapshot, event: ScoreChangeEvent) -> Optional[str]:
+        kind_slug = _slug(event.event_kind.lower())
+        goal_id = f"{match.match_id}_{kind_slug}_{int(event.goal_ts_unix * 1000)}"
         seen = self.state_store.seen_goal_ids()
         if goal_id in seen or goal_id in self.pending_jobs:
             self.logger.debug(
-                "stream-only goal already known",
+                "stream-only event already known",
                 extra={"extra": {"goal_id": goal_id}},
             )
-            return
+            return None
 
         detected_at_utc = datetime.fromtimestamp(event.goal_ts_unix, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        team = ""
+        if event.event_kind == "GOAL":
+            if event.score_home > event.previous_score_home:
+                team = match.home_name
+            elif event.score_away > event.previous_score_away:
+                team = match.away_name
         goal_event = GoalEvent(
             goal_id=goal_id,
-            source="stream-score-change-opencv",
+            source="stream-score-ocr",
             api_detected_at_utc=detected_at_utc,
             minute=0,
             injury_time=0,
             target_minute_label="stream",
-            team="",
+            team=team,
             scorer="",
             assist="",
-            goal_type="SCORE_CHANGE",
-            score_after_goal=Scoreline(home=0, away=0),
+            goal_type=event.event_kind,
+            score_after_goal=Scoreline(home=event.score_home, away=event.score_away),
+            event_kind=event.event_kind,
+            previous_score=Scoreline(home=event.previous_score_home, away=event.previous_score_away),
+            confidence=event.confidence,
+            is_uncertain=event.event_kind == "UNCERTAIN",
+            uncertain_reason=event.reason if event.event_kind == "UNCERTAIN" else "",
+            reversed_by_var=event.event_kind == "VAR_REVERSAL",
         )
         self.goal_store.append_or_update_goal(
             match_id=match.match_id,
@@ -316,23 +432,31 @@ class Orchestrator:
             goal_id=goal_id,
             minute=0,
             injury_time=0,
-            expected_score_home=0,
-            expected_score_away=0,
+            expected_score_home=event.score_home,
+            expected_score_away=event.score_away,
+            event_kind=event.event_kind,
+            pre_seconds=self.config.var.pre_reversal_seconds if event.event_kind == "VAR_REVERSAL" else self.config.highlight.pre_goal_seconds,
+            post_seconds=self.config.var.post_reversal_seconds if event.event_kind == "VAR_REVERSAL" else self.config.highlight.post_goal_seconds,
         )
         self.logger.info(
-            "stream-only goal enqueued",
+            "stream-only event enqueued",
             extra={
                 "extra": {
                     "goal_id": goal_id,
                     "match_id": match.match_id,
-                    "goal_ts_unix": round(event.goal_ts_unix, 3),
-                    "diff_value": round(event.diff_value, 3),
+                    "event_kind": event.event_kind,
+                    "event_ts_unix": round(event.goal_ts_unix, 3),
+                    "previous_score": {"home": event.previous_score_home, "away": event.previous_score_away},
+                    "score": {"home": event.score_home, "away": event.score_away},
+                    "reason": event.reason,
+                    "confidence": round(event.confidence, 3),
                     "changed_home": event.changed_home,
                     "changed_away": event.changed_away,
                     "pending_jobs": len(self.pending_jobs),
                 }
             },
         )
+        return goal_id
 
     def _enqueue_crop_job(
         self,
@@ -548,6 +672,7 @@ class Orchestrator:
                                 injury_time=int(event.get("injury_time", 0)),
                                 expected_score_home=0,
                                 expected_score_away=0,
+                                event_kind=str(event.get("event_kind", "GOAL")),
                             ),
                         )
                     self._enqueue_crop_job(
@@ -563,6 +688,7 @@ class Orchestrator:
             if goal_id in self.pending_jobs:
                 continue
             score_after = event.get("score_after_goal", {})
+            event_kind = str(event.get("event_kind", "GOAL"))
             self.pending_jobs[goal_id] = PendingClipJob(
                 match_id=match.match_id,
                 goal_id=goal_id,
@@ -570,6 +696,9 @@ class Orchestrator:
                 injury_time=int(event.get("injury_time", 0)),
                 expected_score_home=int(score_after.get("home", 0)),
                 expected_score_away=int(score_after.get("away", 0)),
+                event_kind=event_kind,
+                pre_seconds=self.config.var.pre_reversal_seconds if event_kind == "VAR_REVERSAL" else self.config.highlight.pre_goal_seconds,
+                post_seconds=self.config.var.post_reversal_seconds if event_kind == "VAR_REVERSAL" else self.config.highlight.post_goal_seconds,
             )
             seeded += 1
         if seeded > 0:
@@ -625,6 +754,9 @@ class Orchestrator:
                 injury_time=goal.event.injury_time,
                 expected_score_home=goal.event.score_after_goal.home,
                 expected_score_away=goal.event.score_after_goal.away,
+                event_kind="GOAL",
+                pre_seconds=self.config.highlight.pre_goal_seconds,
+                post_seconds=self.config.highlight.post_goal_seconds,
             )
             self.logger.info(
                 "new goal detected",
@@ -681,6 +813,8 @@ class Orchestrator:
                 self.logger.warning("pending goal missing in goal store", extra={"extra": {"goal_id": goal_id}})
                 continue
 
+            pre_seconds = job.pre_seconds if job.pre_seconds is not None else self.config.highlight.pre_goal_seconds
+            post_seconds = job.post_seconds if job.post_seconds is not None else self.config.highlight.post_goal_seconds
             goal_ts: Optional[float] = None
             if timer_minute is None:
                 fallback_ts = _parse_utc_iso_to_unix(event.get("api_detected_at_utc"))
@@ -690,14 +824,14 @@ class Orchestrator:
                         extra={"extra": {"goal_id": goal_id}},
                     )
                     continue
-                if frame_ts < fallback_ts + self.config.highlight.post_goal_seconds:
+                if frame_ts < fallback_ts + post_seconds:
                     self.logger.debug(
                         "job waiting for post-goal window in OCR-less mode",
                         extra={
                             "extra": {
                                 "goal_id": goal_id,
                                 "frame_ts": round(frame_ts, 3),
-                                "required_after_ts": round(fallback_ts + self.config.highlight.post_goal_seconds, 3),
+                                "required_after_ts": round(fallback_ts + post_seconds, 3),
                             }
                         },
                     )
@@ -753,8 +887,8 @@ class Orchestrator:
 
             window = compute_clip_window(
                 goal_ts,
-                self.config.highlight.pre_goal_seconds,
-                self.config.highlight.post_goal_seconds,
+                pre_seconds,
+                post_seconds,
             )
 
             if self.config.dry_run:
@@ -804,6 +938,15 @@ class Orchestrator:
 
             self.state_store.mark_processed(goal_id)
             self.pending_jobs.pop(goal_id, None)
+            if job.event_kind == "UNCERTAIN":
+                event["clip_status"] = "UNCERTAIN_CREATED"
+                self._save_event_dict(match.match_id, match.home_name, match.away_name, event)
+                self.logger.info(
+                    "uncertain candidate clip created",
+                    extra={"extra": {"goal_id": goal_id, "raw": raw_path, "reason": event.get("uncertain_reason")}},
+                )
+                continue
+
             self._enqueue_crop_job(
                 goal_id=goal_id,
                 match_id=match.match_id,
@@ -816,6 +959,68 @@ class Orchestrator:
                 "raw clip created; crop scheduled",
                 extra={"extra": {"goal_id": goal_id, "raw": raw_path, "crop_target": crop_path}},
             )
+
+    def _extract_pending_from_input_file(self, *, match: MatchSnapshot, goal_id: str, input_path: str) -> None:
+        job = self.pending_jobs.get(goal_id)
+        if job is None:
+            return
+        event = self.goal_store.find_goal(match.match_id, goal_id)
+        if event is None:
+            return
+
+        event_ts = _parse_utc_iso_to_unix(event.get("api_detected_at_utc"))
+        if event_ts is None:
+            self.logger.warning("offline event has no usable timestamp", extra={"extra": {"goal_id": goal_id}})
+            return
+
+        raw_path, crop_path = self._build_output_paths(match, job)
+        pre_seconds = job.pre_seconds if job.pre_seconds is not None else self.config.highlight.pre_goal_seconds
+        post_seconds = job.post_seconds if job.post_seconds is not None else self.config.highlight.post_goal_seconds
+        window = compute_clip_window(event_ts, pre_seconds, post_seconds)
+
+        if self.config.dry_run:
+            event["stream_goal_ts_unix"] = event_ts
+            event["clip_status"] = "DRY_RUN"
+            event["raw_clip_path"] = raw_path
+            event["cropped_clip_path"] = None
+            self._save_event_dict(match.match_id, match.home_name, match.away_name, event)
+            self.state_store.mark_processed(goal_id)
+            self.pending_jobs.pop(goal_id, None)
+            return
+
+        try:
+            self.clip_extractor.extract_clip_from_file(
+                input_path=input_path,
+                start_seconds=window.start_ts,
+                end_seconds=window.end_ts,
+                output_path=raw_path,
+            )
+        except Exception as exc:  # pragma: no cover - runtime path
+            self.logger.error("offline raw clip generation failed", extra={"extra": {"goal_id": goal_id, "error": str(exc)}})
+            return
+
+        event["stream_goal_ts_unix"] = event_ts
+        event["raw_clip_path"] = raw_path
+        event["cropped_clip_path"] = None
+        self.state_store.mark_processed(goal_id)
+        self.pending_jobs.pop(goal_id, None)
+
+        if job.event_kind == "UNCERTAIN":
+            event["clip_status"] = "UNCERTAIN_CREATED"
+            self._save_event_dict(match.match_id, match.home_name, match.away_name, event)
+            self.logger.info("offline uncertain candidate clip created", extra={"extra": {"goal_id": goal_id, "raw": raw_path}})
+            return
+
+        event["clip_status"] = "RAW_CREATED"
+        self._save_event_dict(match.match_id, match.home_name, match.away_name, event)
+        self._enqueue_crop_job(
+            goal_id=goal_id,
+            match_id=match.match_id,
+            home=match.home_name,
+            away=match.away_name,
+            raw_path=raw_path,
+            crop_path=crop_path,
+        )
 
     def _save_event_dict(self, match_id: int, home: str, away: str, event: dict) -> None:
         from app.models import GoalEvent, Scoreline
@@ -840,6 +1045,12 @@ class Orchestrator:
             clip_status=event.get("clip_status", "PENDING"),
             raw_clip_path=event.get("raw_clip_path"),
             cropped_clip_path=event.get("cropped_clip_path"),
+            event_kind=event.get("event_kind", "GOAL"),
+            previous_score=_scoreline_from_event(event.get("previous_score")),
+            confidence=float(event.get("confidence", 0.0) or 0.0),
+            is_uncertain=bool(event.get("is_uncertain", False)),
+            uncertain_reason=event.get("uncertain_reason", ""),
+            reversed_by_var=bool(event.get("reversed_by_var", False)),
         )
         self.goal_store.append_or_update_goal(
             match_id=match_id,
@@ -876,11 +1087,18 @@ class Orchestrator:
             f"goal{goal_index}_{job.minute}_{job.injury_time}"
         )
 
-        raw = str(Path(self.config.output.raw_dir) / f"{base}_raw.mp4")
-        cropped = str(Path(self.config.output.cropped_dir) / f"{base}{self.config.crop.output_suffix}.mp4")
+        if job.event_kind == "UNCERTAIN":
+            raw = str(Path(self.config.output.uncertain_dir) / f"{base}_uncertain_raw.mp4")
+            cropped = str(Path(self.config.output.uncertain_dir) / f"{base}_uncertain{self.config.crop.output_suffix}.mp4")
+        elif job.event_kind == "VAR_REVERSAL":
+            raw = str(Path(self.config.output.var_dir) / f"{base}_var_reversal_raw.mp4")
+            cropped = str(Path(self.config.output.var_dir) / f"{base}_var_reversal{self.config.crop.output_suffix}.mp4")
+        else:
+            raw = str(Path(self.config.output.raw_dir) / f"{base}_raw.mp4")
+            cropped = str(Path(self.config.output.cropped_dir) / f"{base}{self.config.crop.output_suffix}.mp4")
         self.logger.debug(
             "built output paths for goal",
-            extra={"extra": {"goal_id": job.goal_id, "raw_path": raw, "cropped_path": cropped}},
+            extra={"extra": {"goal_id": job.goal_id, "event_kind": job.event_kind, "raw_path": raw, "cropped_path": cropped}},
         )
         return raw, cropped
 
@@ -916,3 +1134,12 @@ def _parse_utc_iso_to_unix(value: object) -> Optional[float]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
+
+
+def _scoreline_from_event(value: object) -> Optional[Scoreline]:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return Scoreline(home=int(value.get("home", 0)), away=int(value.get("away", 0)))
+    except (TypeError, ValueError):
+        return None

@@ -28,7 +28,7 @@ class StreamConfig:
 
 @dataclass
 class HighlightConfig:
-    pre_goal_seconds: int = 45
+    pre_goal_seconds: int = 20
     post_goal_seconds: int = 30
     timer_match_tolerance_seconds: int = 2
     require_score_change_confirmation: bool = True
@@ -47,7 +47,7 @@ class StreamOnlyConfig:
     score_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.22)
     home_score_roi: tuple[float, float, float, float] = (0.46, 0.0, 0.06, 0.14)
     away_score_roi: tuple[float, float, float, float] = (0.52, 0.0, 0.06, 0.14)
-    auto_locate_score_rois: bool = True
+    auto_locate_score_rois: bool = False
     auto_locate_frames: int = 30
     change_threshold: float = 18.0
     stable_threshold: float = 6.0
@@ -59,13 +59,29 @@ class StreamOnlyConfig:
 
 
 @dataclass
+class ScoreOcrConfig:
+    stable_frames: int = 3
+    min_confidence: float = 0.65
+    tesseract_cmd: str = "tesseract"
+    temp_dir: str = "data/tmp/score_ocr"
+    uncertain_cooldown_seconds: int = 20
+
+
+@dataclass
+class VarConfig:
+    watch_seconds: int = 300
+    pre_reversal_seconds: int = 20
+    post_reversal_seconds: int = 30
+
+
+@dataclass
 class CropConfig:
     enabled: bool = True
     aspect_ratio: str = "1:1"
     detector_model_path: str = "models/soccer_yolov8s.pt"
     detection_frame_stride: int = 3
     smoothing_alpha: float = 0.25
-    target_class_names: tuple[str, ...] = ("ball",)
+    target_class_names: tuple[str, ...] = ("ball", "player", "goalkeeper", "referee")
     min_confidence: float = 0.15
     background_workers: int = 1
     output_suffix: str = "_crop1x1"
@@ -75,6 +91,8 @@ class CropConfig:
 class OutputConfig:
     raw_dir: str = "data/clips_raw"
     cropped_dir: str = "data/clips_cropped"
+    uncertain_dir: str = "data/clips_uncertain"
+    var_dir: str = "data/clips_var"
     goals_dir: str = "data/goals"
     state_dir: str = "data/state"
     tmp_dir: str = "data/tmp"
@@ -87,6 +105,8 @@ class AppConfig:
     highlight: HighlightConfig = field(default_factory=HighlightConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
     stream_only: StreamOnlyConfig = field(default_factory=StreamOnlyConfig)
+    score_ocr: ScoreOcrConfig = field(default_factory=ScoreOcrConfig)
+    var: VarConfig = field(default_factory=VarConfig)
     crop: CropConfig = field(default_factory=CropConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     football_data_api_token: str = ""
@@ -99,9 +119,12 @@ class AppConfig:
         for path in [
             self.output.raw_dir,
             self.output.cropped_dir,
+            self.output.uncertain_dir,
+            self.output.var_dir,
             self.output.goals_dir,
             self.output.state_dir,
             self.output.tmp_dir,
+            self.score_ocr.temp_dir,
         ]:
             Path(path).mkdir(parents=True, exist_ok=True)
 
@@ -165,6 +188,10 @@ def load_config(
         cfg.stream_only = _merge_dataclass(cfg.stream_only, stream_only)
     elif isinstance(raw.get("stream_only"), bool):
         cfg.stream_only.enabled = bool(raw["stream_only"])
+    if "score_ocr" in raw:
+        cfg.score_ocr = _merge_dataclass(cfg.score_ocr, raw["score_ocr"])
+    if "var" in raw:
+        cfg.var = _merge_dataclass(cfg.var, raw["var"])
     if "crop" in raw:
         crop = raw["crop"].copy()
         if "target_class_names" in crop:

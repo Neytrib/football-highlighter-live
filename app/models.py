@@ -28,10 +28,18 @@ class GoalEvent:
     clip_status: str = "PENDING"
     raw_clip_path: Optional[str] = None
     cropped_clip_path: Optional[str] = None
+    event_kind: str = "GOAL"
+    previous_score: Optional[Scoreline] = None
+    confidence: float = 0.0
+    is_uncertain: bool = False
+    uncertain_reason: str = ""
+    reversed_by_var: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         data["score_after_goal"] = asdict(self.score_after_goal)
+        if self.previous_score is not None:
+            data["previous_score"] = asdict(self.previous_score)
         return data
 
 
@@ -102,4 +110,7 @@ class PendingClipJob:
     injury_time: int
     expected_score_home: int
     expected_score_away: int
+    event_kind: str = "GOAL"
+    pre_seconds: Optional[int] = None
+    post_seconds: Optional[int] = None
     triggered: bool = False
