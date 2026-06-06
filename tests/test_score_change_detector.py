@@ -101,3 +101,32 @@ def test_score_jump_goes_to_uncertain() -> None:
     assert event is not None
     assert event.event_kind == "UNCERTAIN"
     assert event.reason == "score_jump_greater_than_one"
+
+
+def test_score_jump_does_not_replace_baseline_before_real_goal() -> None:
+    detector = _detector(
+        [
+            _reading(0, 0),
+            _reading(0, 0),
+            _reading(23, 0),
+            _reading(23, 0),
+            _reading(0, 1),
+            _reading(0, 1),
+        ]
+    )
+
+    assert detector.process(None, 1.0) is None
+    assert detector.process(None, 2.0) is None
+    assert detector.process(None, 3.0) is None
+    noisy = detector.process(None, 4.0)
+    assert noisy is not None
+    assert noisy.event_kind == "UNCERTAIN"
+
+    assert detector.process(None, 5.0) is None
+    goal = detector.process(None, 6.0)
+    assert goal is not None
+    assert goal.event_kind == "GOAL"
+    assert goal.previous_score_home == 0
+    assert goal.previous_score_away == 0
+    assert goal.score_home == 0
+    assert goal.score_away == 1

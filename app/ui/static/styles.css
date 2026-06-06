@@ -193,12 +193,13 @@ h3 {
   color: #8c2727;
 }
 
-.stream-panel video {
+.stream-panel .preview-media {
   width: 100%;
   aspect-ratio: 16 / 9;
   background: #171a18;
   border-radius: 7px;
   display: block;
+  object-fit: cover;
 }
 
 .stream-form {
@@ -330,6 +331,11 @@ select {
 .active-badge {
   background: #e2f3ea;
   color: #12633f;
+}
+
+.live-badge {
+  background: #e8f1fb;
+  color: #225f86;
 }
 
 .channel-actions {

@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "bash ./dev.sh",
     "dev:clips": "DRY_RUN=0 bash ./dev.sh",
+    "dev:dry-run": "DRY_RUN=1 bash ./dev.sh",
     "engine": "bash ./dev.sh --engine-only",
     "engine:stop": "docker stop football-acestream",
     "highlighter": ".venv/bin/python -m app.main --config configs/config.yaml --log-level INFO"

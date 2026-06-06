@@ -346,14 +346,13 @@ class ScoreChangeDetector:
             return event
 
         reason = _uncertain_reason(home_delta, away_delta)
-        update_baseline = home_delta >= 0 and away_delta >= 0
         return self._uncertain_event(
             previous=previous,
             score=score,
             score_ts=score_ts,
             confidence=confidence,
             reason=reason,
-            update_baseline=update_baseline,
+            update_baseline=False,
         )
 
     def _matching_var_watch(

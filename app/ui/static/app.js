@@ -1,4 +1,5 @@
 const CATALOG_SOURCE_STORAGE_KEY = "footballHighlighterChannelCatalogSources";
+const LIVE_PREVIEW_REFRESH_MS = 2500;
 
 function parseCatalogSources(value) {
   return String(value || "")
@@ -32,6 +33,14 @@ const state = {
   channelQuery: "",
   channelLanguage: "all",
   channelSources: readCatalogSources(),
+  livePreview: {
+    selectedAt: 0,
+    streamKey: "",
+    lastName: "",
+    hls: null,
+    hlsUrl: "",
+    hlsFailedUntil: 0,
+  },
 };
 
 const els = {
@@ -124,6 +133,129 @@ async function refreshChannels() {
   renderChannels();
 }
 
+async function refreshLivePreview() {
+  const recordedStream = state.status?.stream || {};
+  const liveStream = state.status?.live || {};
+  const previewStream = liveStream.configured ? liveStream : recordedStream;
+  if (!previewStream.configured) {
+    state.livePreview.streamKey = "";
+    resetLivePlayer();
+    els.streamHint.textContent = "No stream configured";
+    return;
+  }
+
+  const streamKey = [
+    liveStream.configured ? "live" : "recording",
+    previewStream.id || "",
+    liveStream.startedAt || "",
+    liveStream.state || "",
+  ].join(":");
+  if (state.livePreview.streamKey !== streamKey) {
+    state.livePreview.streamKey = streamKey;
+    state.livePreview.hlsFailedUntil = 0;
+    resetLivePlayer();
+  }
+
+  const payload = await api("/api/live/latest");
+  const hlsAllowed = payload.hlsAvailable && Date.now() >= state.livePreview.hlsFailedUntil;
+  if (hlsAllowed) {
+    attachLivePlayer(versionedLiveUrl(payload.hlsUrl || "/api/live/hls/stream.m3u8"));
+    const age = payload.available ? Number(payload.ageSeconds || 0) : 0;
+    els.streamHint.textContent = `Live HLS: ${titleCase(liveStream.state || "recording")} · ${age}s behind · ${previewStream.playbackUrl || ""}`;
+    return;
+  }
+
+  if (!payload.available) {
+    els.streamHint.textContent = "Waiting for the local stream buffer";
+    return;
+  }
+
+  if (state.livePreview.selectedAt && payload.mtime < state.livePreview.selectedAt - 2) {
+    els.streamHint.textContent = "Waiting for fresh video from the selected channel";
+    return;
+  }
+
+  if (payload.name && payload.name !== state.livePreview.lastName) {
+    state.livePreview.lastName = payload.name;
+    attachSegmentPlayer(payload.mediaUrl, payload.frameUrl);
+  }
+
+  const age = Number(payload.ageSeconds || 0);
+  const mode = payload.hlsAvailable ? "HLS unavailable, using segment fallback" : "Waiting for HLS playlist";
+  els.streamHint.textContent = `Live segment: ${payload.name} · ${age}s behind · ${mode}`;
+}
+
+function resetLivePlayer() {
+  if (state.livePreview.hls) {
+    state.livePreview.hls.destroy();
+    state.livePreview.hls = null;
+  }
+  state.livePreview.hlsUrl = "";
+  state.livePreview.lastName = "";
+  els.streamPreview.removeAttribute("src");
+  els.streamPreview.removeAttribute("poster");
+  els.streamPreview.load();
+}
+
+function versionedLiveUrl(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}v=${encodeURIComponent(state.livePreview.streamKey || Date.now())}`;
+}
+
+function attachSegmentPlayer(mediaUrl, frameUrl) {
+  if (!mediaUrl) return;
+  if (state.livePreview.hls) {
+    state.livePreview.hls.destroy();
+    state.livePreview.hls = null;
+  }
+  state.livePreview.hlsUrl = "";
+  els.streamPreview.muted = true;
+  els.streamPreview.playsInline = true;
+  els.streamPreview.poster = frameUrl ? `${frameUrl}&ts=${Date.now()}` : "";
+  els.streamPreview.src = `${mediaUrl}&ts=${Date.now()}`;
+  els.streamPreview.load();
+  els.streamPreview.play().catch(() => {});
+}
+
+function attachLivePlayer(url) {
+  if (state.livePreview.hlsUrl === url) return;
+  resetLivePlayer();
+  state.livePreview.hlsUrl = url;
+  els.streamPreview.muted = true;
+  els.streamPreview.playsInline = true;
+
+  if (els.streamPreview.canPlayType("application/vnd.apple.mpegurl")) {
+    els.streamPreview.src = url;
+    els.streamPreview.play().catch(() => {});
+    return;
+  }
+
+  if (window.Hls && window.Hls.isSupported()) {
+    const hls = new window.Hls({
+      liveSyncDurationCount: 3,
+      backBufferLength: 12,
+      maxBufferLength: 16,
+    });
+    state.livePreview.hls = hls;
+    hls.loadSource(url);
+    hls.attachMedia(els.streamPreview);
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+      els.streamPreview.play().catch(() => {});
+    });
+    hls.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (data?.fatal) {
+        state.livePreview.hlsFailedUntil = Date.now() + 10000;
+        els.streamHint.textContent = `Live player error: ${data.type || "unknown"}`;
+        resetLivePlayer();
+        refreshLivePreview().catch(() => {});
+      }
+    });
+    return;
+  }
+
+  els.streamHint.textContent = "This browser needs hls.js or native HLS support for live playback";
+}
+
 async function importConfiguredChannelSources() {
   const sources = parseCatalogSources(els.catalogSourceInput.value);
   state.channelSources = sources;
@@ -140,6 +272,7 @@ async function importConfiguredChannelSources() {
 
 async function refreshAll() {
   await Promise.all([refreshStatus(), refreshLogs(), refreshClips(), refreshChannels()]);
+  await refreshLivePreview();
 }
 
 function renderStatus() {
@@ -148,25 +281,27 @@ function renderStatus() {
   const highlighter = status.highlighter || {};
   const mode = status.mode || {};
   const stream = status.stream || {};
+  const live = status.live || {};
 
   els.engineState.textContent = titleCase(engine.state);
   els.highlighterState.textContent = titleCase(highlighter.state);
   els.modeState.textContent = mode.dryRun ? "Dry Run" : "Live Clips";
-  els.streamState.textContent = stream.configured ? "Configured" : "Missing";
+  if (stream.configured && highlighter.state === "running") {
+    els.streamState.textContent = "Recording";
+  } else {
+    els.streamState.textContent = stream.configured ? "Ready" : "Missing";
+  }
   els.serverLine.textContent = `${status.server?.url || "http://127.0.0.1:5174"} · uptime ${status.server?.uptimeSeconds || 0}s`;
   els.lastUpdated.textContent = new Date().toLocaleTimeString();
   if (document.activeElement !== els.streamIdInput) {
     els.streamIdInput.value = stream.id || "";
   }
 
-  if (stream.playbackUrl) {
-    if (els.streamPreview.src !== stream.playbackUrl) {
-      els.streamPreview.src = stream.playbackUrl;
-    }
-    els.streamHint.textContent = stream.playbackUrl;
-  } else {
-    els.streamPreview.removeAttribute("src");
+  if (!stream.playbackUrl && !live.playbackUrl) {
+    resetLivePlayer();
     els.streamHint.textContent = "No stream configured";
+  } else if (!state.livePreview.hlsUrl && !els.streamPreview.poster) {
+    els.streamHint.textContent = "Waiting for the local stream buffer";
   }
 }
 
@@ -214,7 +349,8 @@ function renderClips() {
 }
 
 function renderChannels() {
-  const activeId = state.status?.stream?.id || "";
+  const recordingId = state.status?.stream?.id || "";
+  const liveId = state.status?.live?.id || "";
   const query = state.channelQuery.toLowerCase();
   const channels = state.channels.filter((channel) => {
     const languageMatch = state.channelLanguage === "all" || channel.language === state.channelLanguage;
@@ -229,21 +365,24 @@ function renderChannels() {
   }
 
   els.channelList.innerHTML = channels.map((channel) => {
-    const active = channel.streamId === activeId ? '<span class="badge active-badge">Active</span>' : "";
+    const recording = channel.streamId === recordingId ? '<span class="badge active-badge">Recording</span>' : "";
+    const live = channel.streamId === liveId ? '<span class="badge live-badge">Live</span>' : "";
     const source = channel.source && channel.source !== "manual" ? `<span class="channel-source">${escapeHtml(channel.source)}</span>` : "";
     return `
       <article class="channel-row">
         <div class="channel-main">
           <div class="channel-title">
             <span class="channel-name">${escapeHtml(channel.name)}</span>
-            ${active}
+            ${recording}
+            ${live}
             <span class="badge">${escapeHtml((channel.language || "other").toUpperCase())}</span>
             ${channel.quality ? `<span class="badge">${escapeHtml(channel.quality)}</span>` : ""}
           </div>
           <div class="channel-meta">${escapeHtml(channel.streamId)} ${source}</div>
         </div>
         <div class="channel-actions">
-          <button class="button primary" type="button" data-channel-action="use" data-stream-id="${escapeAttr(channel.streamId)}">Use</button>
+          <button class="button success" type="button" data-channel-action="live" data-stream-id="${escapeAttr(channel.streamId)}">Live</button>
+          <button class="button primary" type="button" data-channel-action="record" data-stream-id="${escapeAttr(channel.streamId)}">Record</button>
           <button class="button danger" type="button" data-channel-action="delete" data-stream-id="${escapeAttr(channel.streamId)}" data-name="${escapeAttr(channel.name)}">Delete</button>
         </div>
       </article>
@@ -282,6 +421,58 @@ async function runCommand(path) {
 
 function setMessage(message) {
   els.commandMessage.textContent = message;
+}
+
+function setRecordingMessage(payload) {
+  const highlighter = payload?.highlighter || state.status?.highlighter || {};
+  const mode = state.status?.mode || {};
+  if (highlighter.state === "running") {
+    if (mode.dryRun) {
+      setMessage("Recording stream is running in dry-run. Clips are disabled until live clips mode is enabled.");
+      return;
+    }
+    setMessage("Recording started. Highlights will appear in Clips as goals are detected.");
+    return;
+  }
+  setMessage(`Recording stream saved, but highlighter is ${titleCase(highlighter.state)}.`);
+}
+
+function captureScroll(elements = []) {
+  return {
+    x: window.scrollX,
+    y: window.scrollY,
+    elements: elements
+      .filter(Boolean)
+      .map((element) => ({
+        element,
+        left: element.scrollLeft,
+        top: element.scrollTop,
+      })),
+  };
+}
+
+function restoreScroll(snapshot) {
+  const apply = () => {
+    window.scrollTo(snapshot.x, snapshot.y);
+    snapshot.elements.forEach(({ element, left, top }) => {
+      element.scrollLeft = left;
+      element.scrollTop = top;
+    });
+  };
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+    setTimeout(apply, 80);
+  });
+}
+
+async function withScrollPreserved(elements, action) {
+  const snapshot = captureScroll(elements);
+  try {
+    return await action();
+  } finally {
+    restoreScroll(snapshot);
+  }
 }
 
 function askModal({ title, text, value = "", input = true, confirm = "Confirm" }) {
@@ -369,28 +560,37 @@ function escapeAttr(value) {
   return escapeHtml(value);
 }
 
-document.getElementById("refreshAll").addEventListener("click", () => refreshAll().catch((error) => setMessage(error.message)));
-document.getElementById("refreshLogs").addEventListener("click", () => refreshLogs().catch((error) => setMessage(error.message)));
+document.getElementById("refreshAll").addEventListener("click", () => {
+  withScrollPreserved([els.channelList, els.clipList, els.logList], refreshAll)
+    .catch((error) => setMessage(error.message));
+});
+document.getElementById("refreshLogs").addEventListener("click", () => {
+  withScrollPreserved([els.logList], refreshLogs).catch((error) => setMessage(error.message));
+});
 els.refreshChannels.addEventListener("click", async () => {
-  try {
-    setMessage("Refreshing channels...");
-    await importConfiguredChannelSources();
-  } catch (error) {
-    setMessage(error.message);
-  }
+  withScrollPreserved([els.channelList], async () => {
+    try {
+      setMessage("Refreshing channels...");
+      await importConfiguredChannelSources();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  }).catch((error) => setMessage(error.message));
 });
 
 document.querySelectorAll("[data-command]").forEach((button) => {
-  button.addEventListener("click", () => runCommand(button.dataset.command));
+  button.addEventListener("click", () => {
+    withScrollPreserved([els.logList], () => runCommand(button.dataset.command));
+  });
 });
 
 document.getElementById("openStream").addEventListener("click", () => {
-  const url = state.status?.stream?.playbackUrl;
+  const url = state.status?.live?.hlsPlaybackUrl || state.status?.live?.playbackUrl || state.status?.stream?.playbackUrl;
   if (url) window.open(url, "_blank", "noreferrer");
 });
 
 document.getElementById("copyStream").addEventListener("click", async () => {
-  const url = state.status?.stream?.playbackUrl;
+  const url = state.status?.live?.hlsPlaybackUrl || state.status?.live?.playbackUrl || state.status?.stream?.playbackUrl;
   if (!url) return;
   await navigator.clipboard.writeText(url);
   setMessage("Stream link copied");
@@ -399,15 +599,19 @@ document.getElementById("copyStream").addEventListener("click", async () => {
 els.categoryTabs.addEventListener("click", (event) => {
   const button = event.target.closest("[data-category]");
   if (!button) return;
-  state.activeCategory = button.dataset.category;
-  renderTabs();
-  renderClips();
+  event.preventDefault();
+  withScrollPreserved([els.clipList], async () => {
+    state.activeCategory = button.dataset.category;
+    renderTabs();
+    renderClips();
+  }).catch((error) => setMessage(error.message));
 });
 
 els.clipList.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
-  handleClipAction(button);
+  event.preventDefault();
+  withScrollPreserved([els.clipList], () => handleClipAction(button));
 });
 
 els.channelSearch.addEventListener("input", () => {
@@ -422,92 +626,123 @@ els.channelLanguage.addEventListener("change", () => {
 
 els.catalogSourceForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  try {
-    setMessage("Checking channel catalog...");
-    await importConfiguredChannelSources();
-  } catch (error) {
-    setMessage(error.message);
-  }
+  await withScrollPreserved([els.channelList], async () => {
+    try {
+      setMessage("Checking channel catalog...");
+      await importConfiguredChannelSources();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  });
 });
 
 els.channelList.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-channel-action]");
   if (!button) return;
-  const streamId = button.dataset.streamId;
-  const action = button.dataset.channelAction;
-  try {
-    if (action === "use") {
-      setMessage("Setting channel stream...");
-      await post("/api/stream", { streamId, restartHighlighter: true });
-      await refreshStatus();
-      renderChannels();
-      setMessage("Channel selected");
+  event.preventDefault();
+  await withScrollPreserved([els.channelList], async () => {
+    const streamId = button.dataset.streamId;
+    const action = button.dataset.channelAction;
+    try {
+      if (action === "live") {
+        setMessage("Opening live view...");
+        state.livePreview.selectedAt = Date.now() / 1000;
+        state.livePreview.streamKey = "";
+        state.livePreview.hlsFailedUntil = 0;
+        state.livePreview.lastName = "";
+        await post("/api/live", { streamId });
+        await refreshStatus();
+        await refreshLivePreview();
+        renderChannels();
+        setMessage("Live view selected. Preview updates from its own buffer.");
+      }
+      if (action === "record") {
+        setMessage("Setting clip recording stream...");
+        const payload = await post("/api/stream", { streamId, restartHighlighter: true, startHighlighter: true });
+        await refreshStatus();
+        renderChannels();
+        setRecordingMessage(payload);
+      }
+      if (action === "delete") {
+        const confirmed = await askModal({
+          title: "Delete Channel",
+          text: `Delete ${button.dataset.name || "this channel"} from the local list?`,
+          input: false,
+          confirm: "Delete",
+        });
+        if (!confirmed) return;
+        await post("/api/channels/delete", { streamId });
+        await refreshChannels();
+        setMessage("Channel deleted");
+      }
+    } catch (error) {
+      setMessage(error.message);
     }
-    if (action === "delete") {
-      const confirmed = await askModal({
-        title: "Delete Channel",
-        text: `Delete ${button.dataset.name || "this channel"} from the local list?`,
-        input: false,
-        confirm: "Delete",
-      });
-      if (!confirmed) return;
-      await post("/api/channels/delete", { streamId });
-      await refreshChannels();
-      setMessage("Channel deleted");
-    }
-  } catch (error) {
-    setMessage(error.message);
-  }
+  });
 });
 
 els.channelForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const name = els.channelNameInput.value.trim();
-  const streamId = els.channelIdInput.value.trim();
-  if (!streamId) return;
-  try {
-    await post("/api/channels", {
-      name,
-      streamId,
-      language: els.channelLangInput.value,
-      quality: els.channelQualityInput.value.trim(),
-    });
-    els.channelNameInput.value = "";
-    els.channelIdInput.value = "";
-    els.channelQualityInput.value = "";
-    await refreshChannels();
-    setMessage("Channel added");
-  } catch (error) {
-    setMessage(error.message);
-  }
+  await withScrollPreserved([els.channelList], async () => {
+    const name = els.channelNameInput.value.trim();
+    const streamId = els.channelIdInput.value.trim();
+    if (!streamId) return;
+    try {
+      await post("/api/channels", {
+        name,
+        streamId,
+        language: els.channelLangInput.value,
+        quality: els.channelQualityInput.value.trim(),
+      });
+      els.channelNameInput.value = "";
+      els.channelIdInput.value = "";
+      els.channelQualityInput.value = "";
+      await refreshChannels();
+      setMessage("Channel added");
+    } catch (error) {
+      setMessage(error.message);
+    }
+  });
 });
 
 els.categoryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const name = els.categoryName.value.trim();
-  if (!name) return;
-  try {
-    await post("/api/categories", { name });
-    els.categoryName.value = "";
-    await refreshClips();
-    setMessage("Category created");
-  } catch (error) {
-    setMessage(error.message);
-  }
+  await withScrollPreserved([els.clipList], async () => {
+    const name = els.categoryName.value.trim();
+    if (!name) return;
+    try {
+      await post("/api/categories", { name });
+      els.categoryName.value = "";
+      await refreshClips();
+      setMessage("Category created");
+    } catch (error) {
+      setMessage(error.message);
+    }
+  });
 });
 
 els.streamForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const streamId = els.streamIdInput.value.trim();
-  if (!streamId) return;
-  try {
-    setMessage("Updating stream...");
-    await post("/api/stream", { streamId, restartHighlighter: true });
-    await refreshStatus();
-    setMessage("Stream updated");
-  } catch (error) {
-    setMessage(error.message);
-  }
+  await withScrollPreserved([els.channelList, els.clipList, els.logList], async () => {
+    const streamId = els.streamIdInput.value.trim();
+    if (!streamId) return;
+    try {
+      setMessage("Updating recording stream...");
+      const previewRecordingStream = !state.status?.live?.configured;
+      if (previewRecordingStream) {
+        state.livePreview.selectedAt = Date.now() / 1000;
+        state.livePreview.lastName = "";
+      }
+      const payload = await post("/api/stream", { streamId, restartHighlighter: true, startHighlighter: true });
+      await refreshStatus();
+      if (previewRecordingStream) {
+        await refreshLivePreview();
+      }
+      setRecordingMessage(payload);
+    } catch (error) {
+      setMessage(error.message);
+    }
+  });
 });
 
 els.catalogSourceInput.value = state.channelSources.join(", ");
@@ -517,6 +752,9 @@ setInterval(() => {
   refreshStatus().catch(() => {});
   refreshLogs().catch(() => {});
 }, 5000);
+setInterval(() => {
+  refreshLivePreview().catch(() => {});
+}, LIVE_PREVIEW_REFRESH_MS);
 setInterval(() => {
   refreshClips().catch(() => {});
 }, 12000);

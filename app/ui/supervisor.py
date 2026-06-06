@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import signal
@@ -70,6 +71,7 @@ class HighlighterSupervisor:
             cwd=Path.cwd(),
             env=env,
             text=True,
+            start_new_session=True,
         )
         return self.status()
 
@@ -79,10 +81,15 @@ class HighlighterSupervisor:
         if self.process.poll() is not None:
             return self.status()
         try:
-            self.process.send_signal(signal.SIGTERM)
+            os.killpg(self.process.pid, signal.SIGTERM)
             self.process.wait(timeout=timeout_seconds)
+        except ProcessLookupError:
+            self.process.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            self.process.kill()
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             self.process.wait(timeout=3)
         return self.status()
 
@@ -92,6 +99,8 @@ class HighlighterSupervisor:
 
 
 class EngineSupervisor:
+    REQUIRED_PORTS = ("6878/tcp", "8621/tcp", "8621/udp")
+
     def __init__(
         self,
         *,
@@ -114,6 +123,13 @@ class EngineSupervisor:
             return {"state": "error", "message": running.stderr.strip() or "Unable to inspect container"}
         if running.stdout.strip() != "true":
             return {"state": "stopped", "message": "AceStream container is stopped"}
+        missing_ports = self._missing_required_ports()
+        if missing_ports:
+            return {
+                "state": "misconfigured",
+                "message": "AceStream container is missing required port bindings",
+                "missingPorts": missing_ports,
+            }
         version = self._engine_version()
         if version["ok"]:
             return {"state": "running", "message": "AceStream engine is ready", "version": version.get("body")}
@@ -124,22 +140,14 @@ class EngineSupervisor:
             return {"state": "unavailable", "message": "Docker is not available"}
         inspect = self._run(["docker", "container", "inspect", self.container_name])
         if inspect.returncode == 0:
-            self._run(["docker", "start", self.container_name])
+            if self._missing_required_ports():
+                self._run(["docker", "stop", self.container_name], timeout=20)
+                self._run(["docker", "rm", self.container_name], timeout=20)
+                self._create_container()
+            else:
+                self._run(["docker", "start", self.container_name])
         else:
-            self._run(
-                [
-                    "docker",
-                    "run",
-                    "-d",
-                    "--name",
-                    self.container_name,
-                    "--platform=linux/amd64",
-                    "-p",
-                    "6878:6878",
-                    self.image,
-                ],
-                timeout=30,
-            )
+            self._create_container()
         return self._wait_ready()
 
     def stop(self) -> dict[str, Any]:
@@ -151,6 +159,8 @@ class EngineSupervisor:
     def restart(self) -> dict[str, Any]:
         if not self._docker_available():
             return {"state": "unavailable", "message": "Docker is not available"}
+        if self._missing_required_ports():
+            return self.start()
         self._run(["docker", "restart", self.container_name], timeout=30)
         return self._wait_ready()
 
@@ -174,6 +184,42 @@ class EngineSupervisor:
         except TimeoutError:
             return {"ok": False, "message": "Engine API timed out"}
         return {"ok": True, "body": body}
+
+    def _create_container(self) -> subprocess.CompletedProcess[str]:
+        return self._run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                self.container_name,
+                "--platform=linux/amd64",
+                "-p",
+                "6878:6878",
+                "-p",
+                "8621:8621",
+                "-p",
+                "8621:8621/udp",
+                self.image,
+            ],
+            timeout=30,
+        )
+
+    def _missing_required_ports(self) -> list[str]:
+        ports = self._port_bindings()
+        if ports is None:
+            return []
+        return [port for port in self.REQUIRED_PORTS if not ports.get(port)]
+
+    def _port_bindings(self) -> dict[str, Any] | None:
+        result = self._run(["docker", "inspect", "-f", "{{json .NetworkSettings.Ports}}", self.container_name])
+        if result.returncode != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     @staticmethod
     def _run(command: list[str], *, timeout: float = 10.0) -> subprocess.CompletedProcess[str]:

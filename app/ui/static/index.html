@@ -48,9 +48,9 @@
           </div>
           <form id="streamForm" class="stream-form">
             <input id="streamIdInput" type="text" autocomplete="off" placeholder="AceStream ID">
-            <button class="button primary" type="submit">Set Stream</button>
+            <button class="button primary" type="submit">Record Stream</button>
           </form>
-          <video id="streamPreview" controls muted playsinline></video>
+          <video id="streamPreview" class="preview-media" controls muted playsinline></video>
           <div id="streamHint" class="hint">No stream configured</div>
         </div>
 
@@ -156,6 +156,7 @@
       </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
     <script src="/app.js"></script>
   </body>
 </html>

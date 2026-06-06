@@ -106,23 +106,25 @@ Important sections:
 
 ## Running The Local UI
 
-Start the local engine, UI, and highlighter in dry-run mode:
+Start the local engine, UI, and highlighter with clipping enabled:
 
 ```bash
 npm run dev
 ```
 
-Open:
+Open the printed local URL:
 
 ```text
 http://127.0.0.1:5174
 ```
 
-The dashboard shows AceStream/highlighter status, recent JSON logs, a stream preview/open action, a local channel catalog, and a clip library for raw, cropped, uncertain, VAR, and custom categories. You can add a stream by pasting a bare AceStream ID, an `acestream://...` link, or an existing local `getstream?id=...` URL into the Stream panel. Rename, delete, and move actions change files directly on disk and are guarded by backend path checks.
+The dashboard shows AceStream/highlighter status, recent JSON logs, a stream preview/open action, a local channel catalog, and a clip library for raw, cropped, uncertain, VAR, and custom categories. You can add a stream by pasting a bare AceStream ID, an `acestream://...` link, or an existing local `getstream?id=...` URL into the Stream panel. The `Live` button sends that stream to an on-screen local HLS preview buffer, and the `Record` button sets that stream as the clip source and starts or restarts the highlighter. If Live and Record point to the same stream, the preview mirrors the recording buffer instead of opening a second stream. Rename, delete, and move actions change files directly on disk and are guarded by backend path checks.
+
+AceStream needs both the local HTTP API port and the peer port. `npm run dev` creates or recreates the local `football-acestream` container with `6878/tcp`, `8621/tcp`, and `8621/udp` published; if an older container only exposes `6878`, the launcher replaces that local container automatically.
 
 ### Local Channel Catalog
 
-Channels are stored locally in `data/state/channels.json`. The dashboard can add, delete, search, filter by language, sort higher-quality entries first, and set the active stream from a channel row.
+Channels are stored locally in `data/state/channels.json`. When that local catalog is empty, the app seeds it from `configs/channels.json`, which includes the bundled Okko Sport, Setanta Sports, Match TV, and Working Stream 016 entries. The dashboard can add, delete, search, filter by language, sort higher-quality entries first, and set the active stream from a channel row.
 
 Manual entries accept the same stream input formats as the Stream panel. Optional automatic refresh imports only configured JSON catalogs; it does not scrape arbitrary web pages. In the Channels panel, paste a comma-separated JSON catalog URL or file path into the catalog source field and click `Check`; the browser remembers those sources and re-checks them every minute while the page is open.
 
@@ -150,18 +152,19 @@ Catalog JSON can be either a list or an object with a `channels` list:
 
 The UI refreshes configured catalogs every minute while open, and the server also refreshes configured sources every minute while running.
 
-To create real clips instead of dry-run events:
+To run the UI without creating clips:
 
 ```bash
-npm run dev:clips
+npm run dev:dry-run
 ```
 
 Useful UI environment variables:
 
 - `UI_HOST`: dashboard bind host, default `127.0.0.1`
 - `UI_PORT`: dashboard port, default `5174`
-- `DRY_RUN`: set `0` to enable clipping
+- `DRY_RUN`: set `1` to disable clipping; clipping is enabled by default for `npm run dev`
 - `CHANNEL_CATALOG_URLS`: comma-separated lawful JSON catalog URLs or file paths
+- `CHANNEL_CATALOG_SEED`: initial JSON catalog for an empty local catalog, default `configs/channels.json`
 - `CHANNEL_REFRESH_SECONDS`: server-side catalog refresh interval, default `60`
 
 ## Running The CLI Directly

@@ -49,7 +49,10 @@ def normalize_stream_input(value: str, *, engine_base_url: str = "http://127.0.0
 
     return StreamSelection(
         stream_id=stream_id,
-        stream_url=f"{engine_base_url.rstrip('/')}/ace/getstream?id={stream_id}",
+        stream_url=(
+            f"{engine_base_url.rstrip('/')}/ace/getstream"
+            f"?id={stream_id}&pid=football-highlighter-recorder&use_stop_notifications=1"
+        ),
     )
 
 

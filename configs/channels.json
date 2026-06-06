@@ -1,0 +1,32 @@
+{
+  "channels": [
+    {
+      "name": "Okko Sport",
+      "stream": "acestream://350b2044f1c9e87e18d8fbda1bcc456c22cf9296/",
+      "language": "ru",
+      "quality": "HD",
+      "source": "acestreamid.com"
+    },
+    {
+      "name": "Setanta Sports",
+      "stream": "acestream://d63d8a57cf471394bfa9f619bbd68b01ae27a801/",
+      "language": "ru",
+      "quality": "HD",
+      "source": "acestreamid.com"
+    },
+    {
+      "name": "Match TV (\u041c\u0430\u0442\u0447! \u0422\u0412)",
+      "stream": "acestream://5f966c123759de46dff29c379266b7a403452033/",
+      "language": "ru",
+      "quality": "HD",
+      "source": "acestreamid.com"
+    },
+    {
+      "name": "Working Stream 016",
+      "stream": "acestream://016d48fb89bb9505ab3f883db1bfb3a7c0a3eccc/",
+      "language": "other",
+      "quality": "HD",
+      "source": "manual"
+    }
+  ]
+}

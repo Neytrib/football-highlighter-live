@@ -49,11 +49,13 @@ class Orchestrator:
 
         self.rolling_buffer = RollingBuffer(buffer_seconds=self.config.stream.rolling_buffer_seconds, logger=self.logger)
         self.segment_dir = str(Path(self.config.output.tmp_dir) / "segments")
+        self.hls_dir = str(Path(self.config.output.tmp_dir) / "hls")
         self.recorder = StreamRecorder(
             stream_url=self.config.stream_url,
             segment_dir=self.segment_dir,
             stream_config=self.config.stream,
             rolling_buffer=self.rolling_buffer,
+            hls_dir=self.hls_dir,
             logger=self.logger,
         )
 
@@ -107,6 +109,7 @@ class Orchestrator:
                     "stream_only": self.config.stream_only.enabled,
                     "crop_background_workers": self.config.crop.background_workers,
                     "segment_dir": self.segment_dir,
+                    "hls_dir": self.hls_dir,
                 }
             },
         )

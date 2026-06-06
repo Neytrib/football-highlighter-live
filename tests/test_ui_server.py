@@ -1,7 +1,11 @@
+import os
+from pathlib import Path
+
 from app.config import AppConfig
 from app.ui.channel_catalog import ChannelCatalog
 from app.ui.clip_library import ClipLibrary
-from app.ui.server import UiContext, make_handler
+from app.ui.live_preview import LivePreviewSupervisor
+from app.ui.server import UiContext, make_handler, seed_channel_catalog, select_live_stream, select_recording_stream
 from app.ui.supervisor import HighlighterSettings, HighlighterSupervisor
 
 
@@ -10,9 +14,32 @@ class _Engine:
         return {"state": "stopped"}
 
 
-def test_status_endpoint_serves_json_without_api_token(tmp_path) -> None:
-    cfg = AppConfig()
-    cfg.stream_url = "http://127.0.0.1:6878/ace/getstream?id=abc"
+class _Highlighter:
+    def __init__(self, state="stopped"):
+        self.state = state
+        self.stream_url = ""
+        self.started = 0
+        self.restarted = 0
+
+    def set_stream_url(self, stream_url):
+        self.stream_url = stream_url
+
+    def status(self):
+        return {"state": self.state, "pid": None, "returncode": None}
+
+    def start(self):
+        self.started += 1
+        self.state = "running"
+        return self.status()
+
+    def restart(self):
+        self.restarted += 1
+        self.state = "running"
+        return self.status()
+
+
+def _make_context(tmp_path, cfg=None):
+    cfg = cfg or AppConfig()
     cfg.football_data_api_token = "secret-token"
     cfg.output.raw_dir = str(tmp_path / "raw")
     cfg.output.cropped_dir = str(tmp_path / "cropped")
@@ -25,12 +52,16 @@ def test_status_endpoint_serves_json_without_api_token(tmp_path) -> None:
     cfg.score_ocr.temp_dir = str(tmp_path / "score_ocr")
     cfg.ensure_output_dirs()
 
-    context = UiContext(
+    return UiContext(
         config=cfg,
         clip_library=ClipLibrary(cfg),
         channel_catalog=ChannelCatalog(tmp_path / "channels.json"),
         channel_sources=[],
         highlighter=HighlighterSupervisor(HighlighterSettings(config_path="configs/config.yaml")),
+        live_preview=LivePreviewSupervisor(
+            stream_config=cfg.stream,
+            segment_dir=str(tmp_path / "tmp" / "live-preview"),
+        ),
         engine=_Engine(),  # type: ignore[arg-type]
         host="127.0.0.1",
         port=0,
@@ -38,8 +69,220 @@ def test_status_endpoint_serves_json_without_api_token(tmp_path) -> None:
         env_file=str(tmp_path / ".env"),
         started_at=0,
     )
+
+
+def test_status_endpoint_serves_json_without_api_token(tmp_path) -> None:
+    cfg = AppConfig()
+    cfg.stream_url = "http://127.0.0.1:6878/ace/getstream?id=abc"
+    context = _make_context(tmp_path, cfg)
     handler = object.__new__(make_handler(context))
     payload = handler._status_payload()
 
     assert payload["server"]["state"] == "running"
     assert "secret-token" not in str(payload)
+
+
+def test_seed_channel_catalog_imports_only_when_empty(tmp_path) -> None:
+    catalog = ChannelCatalog(tmp_path / "channels.json")
+    seed = tmp_path / "seed.json"
+    seed.write_text(
+        """
+        {
+          "channels": [
+            {
+              "name": "Seeded",
+              "stream": "acestream://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+              "language": "en",
+              "quality": "1080p"
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    result = seed_channel_catalog(catalog, str(seed))
+    skipped = seed_channel_catalog(catalog, str(seed))
+
+    assert result is not None
+    assert result["added"] == 1
+    assert skipped is None
+    assert [channel["name"] for channel in catalog.list_payload()["channels"]] == ["Seeded"]
+
+
+def test_select_recording_stream_starts_stopped_highlighter(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    highlighter = _Highlighter("stopped")
+    context.highlighter = highlighter  # type: ignore[assignment]
+
+    payload = select_recording_stream(context, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+    assert payload["stream"]["id"] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert payload["highlighter"]["state"] == "running"
+    assert payload["startedHighlighter"] is True
+    assert payload["restartedHighlighter"] is False
+    assert highlighter.started == 1
+    assert highlighter.restarted == 0
+    assert highlighter.stream_url == context.config.stream_url
+    assert "STREAM_URL=" in Path(context.env_file).read_text(encoding="utf-8")
+
+
+def test_select_recording_stream_restarts_running_highlighter(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    highlighter = _Highlighter("running")
+    context.highlighter = highlighter  # type: ignore[assignment]
+
+    payload = select_recording_stream(context, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    assert payload["highlighter"]["state"] == "running"
+    assert payload["startedHighlighter"] is False
+    assert payload["restartedHighlighter"] is True
+    assert highlighter.started == 0
+    assert highlighter.restarted == 1
+
+
+def test_select_recording_stream_can_skip_starting_highlighter(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    highlighter = _Highlighter("stopped")
+    context.highlighter = highlighter  # type: ignore[assignment]
+
+    payload = select_recording_stream(
+        context,
+        "cccccccccccccccccccccccccccccccccccccccc",
+        start_highlighter=False,
+    )
+
+    assert payload["highlighter"]["state"] == "stopped"
+    assert payload["startedHighlighter"] is False
+    assert highlighter.started == 0
+
+
+def test_select_live_stream_starts_local_preview_for_new_stream(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    started_urls = []
+
+    def fake_start(stream_url):
+        started_urls.append(stream_url)
+        return {"state": "running", "configured": True, "url": stream_url}
+
+    context.live_preview.start = fake_start  # type: ignore[method-assign]
+
+    payload = select_live_stream(
+        context,
+        "dddddddddddddddddddddddddddddddddddddddd",
+        recording_segment_dir=tmp_path / "recording-segments",
+        recording_hls_dir=tmp_path / "recording-hls",
+    )
+
+    assert started_urls == [
+        "http://127.0.0.1:6878/ace/getstream?id=dddddddddddddddddddddddddddddddddddddddd&pid=football-highlighter-recorder&use_stop_notifications=1"
+    ]
+    assert payload["live"]["state"] == "running"
+    assert payload["live"]["hlsPlaybackUrl"] == "/api/live/hls/stream.m3u8"
+
+
+def test_select_live_stream_mirrors_recording_buffer_for_recording_stream(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    context.config.stream_url = (
+        "http://127.0.0.1:6878/ace/getstream?id=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        "&pid=football-highlighter-recorder&use_stop_notifications=1"
+    )
+    mirrored = []
+
+    def fake_use_existing(stream_url, segment_dir, hls_dir):
+        mirrored.append((stream_url, Path(segment_dir), Path(hls_dir)))
+        return {"state": "mirroring", "configured": True, "url": stream_url}
+
+    context.live_preview.use_existing = fake_use_existing  # type: ignore[method-assign]
+
+    payload = select_live_stream(
+        context,
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        recording_segment_dir=tmp_path / "recording-segments",
+        recording_hls_dir=tmp_path / "recording-hls",
+    )
+
+    assert mirrored == [
+        (
+            context.config.stream_url,
+            tmp_path / "recording-segments",
+            tmp_path / "recording-hls",
+        )
+    ]
+    assert payload["live"]["state"] == "mirroring"
+    assert payload["live"]["hlsPlaybackUrl"] == "/api/live/hls/stream.m3u8"
+
+
+def test_live_latest_payload_uses_newest_segment(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    segment_dir = Path(context.config.output.tmp_dir) / "segments"
+    hls_dir = Path(context.config.output.tmp_dir) / "hls"
+    segment_dir.mkdir(parents=True)
+    hls_dir.mkdir(parents=True)
+    old_segment = segment_dir / "segment_20260606T190000.mp4"
+    new_segment = segment_dir / "segment_20260606T190002.mp4"
+    (hls_dir / "stream.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+    old_segment.write_bytes(b"old")
+    new_segment.write_bytes(b"newer")
+    os.utime(old_segment, (100, 100))
+    os.utime(new_segment, (200, 200))
+
+    handler = object.__new__(make_handler(context))
+    payload = handler._live_latest_payload()
+
+    assert payload["available"] is True
+    assert payload["name"] == new_segment.name
+    assert payload["size"] == 5
+    assert payload["mediaUrl"] == f"/api/live/segment?name={new_segment.name}"
+    assert payload["frameUrl"] == f"/api/live/frame?name={new_segment.name}"
+    assert payload["hlsAvailable"] is True
+    assert payload["hlsUrl"] == "/api/live/hls/stream.m3u8"
+
+
+def test_live_latest_payload_uses_mirrored_recording_buffer(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    stream_url = "http://127.0.0.1:6878/ace/getstream?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    recording_dir = Path(context.config.output.tmp_dir) / "segments"
+    preview_dir = Path(context.config.output.tmp_dir) / "live-preview"
+    recording_hls_dir = Path(context.config.output.tmp_dir) / "hls"
+    preview_hls_dir = preview_dir / "hls"
+    recording_dir.mkdir(parents=True)
+    preview_dir.mkdir(parents=True)
+    recording_hls_dir.mkdir(parents=True)
+    preview_hls_dir.mkdir(parents=True)
+    recording_segment = recording_dir / "segment_20260606T190003.mp4"
+    preview_segment = preview_dir / "segment_20260606T190004.mp4"
+    (recording_hls_dir / "stream.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+    (preview_hls_dir / "stream.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+    recording_segment.write_bytes(b"recording")
+    preview_segment.write_bytes(b"preview")
+    os.utime(recording_segment, (300, 300))
+    os.utime(preview_segment, (400, 400))
+
+    context.live_preview.use_existing(stream_url, recording_dir, recording_hls_dir)
+    handler = object.__new__(make_handler(context))
+    payload = handler._live_latest_payload()
+
+    assert context.live_preview.status()["state"] == "mirroring"
+    assert context.live_preview.status()["hlsDir"] == str(recording_hls_dir)
+    assert payload["available"] is True
+    assert payload["name"] == recording_segment.name
+    assert payload["size"] == 9
+    assert payload["hlsAvailable"] is True
+
+
+def test_live_latest_payload_reports_external_hls_without_segments(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    stream_url = "http://127.0.0.1:6878/ace/getstream?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    context.live_preview.use_external_hls(
+        stream_url,
+        "http://127.0.0.1:6878/ace/m/hash/session.m3u8",
+    )
+
+    handler = object.__new__(make_handler(context))
+    payload = handler._live_latest_payload()
+
+    assert context.live_preview.status()["state"] == "external"
+    assert payload["available"] is False
+    assert payload["hlsAvailable"] is True
+    assert payload["hlsUrl"] == "/api/live/hls/stream.m3u8"

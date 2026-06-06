@@ -6,7 +6,10 @@ from app.ui.stream_manager import StreamInputError, normalize_stream_input, stre
 
 
 STREAM_ID = "e38b33c56332de27ff25df223cdf488b1ec6051f"
-STREAM_URL = f"http://127.0.0.1:6878/ace/getstream?id={STREAM_ID}"
+STREAM_URL = (
+    f"http://127.0.0.1:6878/ace/getstream"
+    f"?id={STREAM_ID}&pid=football-highlighter-recorder&use_stop_notifications=1"
+)
 
 
 def test_normalize_stream_input_accepts_bare_id() -> None:

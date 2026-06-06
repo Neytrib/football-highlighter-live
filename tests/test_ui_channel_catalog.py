@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.ui.channel_catalog import ChannelCatalog, ChannelCatalogError, parse_catalog_sources, quality_rank
+from app.ui.stream_manager import stream_id_from_url
 
 
 STREAM_ID = "e38b33c56332de27ff25df223cdf488b1ec6051f"
@@ -17,7 +18,7 @@ def test_channel_catalog_adds_and_sorts_by_quality(tmp_path: Path) -> None:
 
     channels = catalog.list_payload()["channels"]
     assert [channel["name"] for channel in channels] == ["High", "Low"]
-    assert channels[0]["streamUrl"].endswith(f"id={STREAM_ID}")
+    assert stream_id_from_url(channels[0]["streamUrl"]) == STREAM_ID
 
 
 def test_channel_catalog_rejects_invalid_stream(tmp_path: Path) -> None:
