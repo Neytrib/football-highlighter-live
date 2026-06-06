@@ -29,7 +29,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -128,6 +129,12 @@ h3 {
   grid-template-columns: minmax(360px, 1.4fr) minmax(320px, 0.9fr);
   gap: 14px;
   margin-bottom: 14px;
+}
+
+.side-stack {
+  display: grid;
+  gap: 14px;
+  align-content: start;
 }
 
 .workspace {
@@ -233,7 +240,8 @@ h3 {
   align-items: center;
 }
 
-input {
+input,
+select {
   min-height: 34px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -241,6 +249,94 @@ input {
   background: #fff;
   color: var(--ink);
   min-width: 0;
+}
+
+select {
+  cursor: pointer;
+}
+
+.channel-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.channel-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.catalog-source-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+#channelIdInput {
+  grid-column: span 2;
+}
+
+.channel-form .button,
+.catalog-source-form .button {
+  min-width: 70px;
+}
+
+.channel-list {
+  display: grid;
+  gap: 8px;
+  max-height: 340px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.channel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fdfdfb;
+}
+
+.channel-title {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.channel-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.channel-meta {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.channel-source {
+  margin-left: 4px;
+}
+
+.active-badge {
+  background: #e2f3ea;
+  color: #12633f;
+}
+
+.channel-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .tabs {
@@ -416,7 +512,8 @@ input {
 @media (max-width: 620px) {
   .topbar,
   .panel-head,
-  .clip-row {
+  .clip-row,
+  .channel-row {
     align-items: stretch;
     flex-direction: column;
   }
@@ -429,7 +526,10 @@ input {
     padding: 12px;
   }
 
-  .category-form {
+  .category-form,
+  .channel-tools,
+  .catalog-source-form,
+  .channel-form {
     grid-template-columns: 1fr;
   }
 
@@ -437,11 +537,13 @@ input {
     grid-template-columns: 1fr;
   }
 
-  .clip-row {
+  .clip-row,
+  .channel-row {
     grid-template-columns: 1fr;
   }
 
-  .clip-actions {
+  .clip-actions,
+  .channel-actions {
     justify-content: flex-start;
   }
 

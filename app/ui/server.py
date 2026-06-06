@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import errno
 import json
 import mimetypes
+import os
 from pathlib import Path
 from time import time
 from typing import Any
@@ -12,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.config import AppConfig, load_config
+from app.ui.channel_catalog import ChannelCatalog, ChannelCatalogError, ChannelRefreshWorker, parse_catalog_sources
 from app.ui.clip_library import ClipLibrary, ClipLibraryError
 from app.ui.logs import read_recent_logs
 from app.ui.stream_manager import StreamInputError, normalize_stream_input, stream_id_from_url, write_stream_url_env
@@ -25,6 +27,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 class UiContext:
     config: AppConfig
     clip_library: ClipLibrary
+    channel_catalog: ChannelCatalog
+    channel_sources: list[str]
     highlighter: HighlighterSupervisor
     engine: EngineSupervisor
     host: str
@@ -52,6 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--engine-url", default="http://127.0.0.1:6878/webui/api/service?method=get_version")
     parser.add_argument("--engine-container", default="football-acestream")
     parser.add_argument("--engine-image", default="blaiseio/acelink")
+    parser.add_argument("--channel-catalog-sources", default="", help="Comma-separated lawful JSON channel catalog sources")
+    parser.add_argument("--channel-refresh-seconds", type=int, default=60, help="Channel catalog refresh interval")
     return parser
 
 
@@ -72,6 +78,9 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
                     return
                 if parsed.path == "/api/clips":
                     self._send_json(context.clip_library.list_clips())
+                    return
+                if parsed.path == "/api/channels":
+                    self._send_json(context.channel_catalog.list_payload())
                     return
                 if parsed.path == "/media":
                     self._serve_media(parsed.query)
@@ -135,6 +144,18 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
                         }
                     )
                     return
+                if parsed.path == "/api/channels":
+                    self._send_json({"channel": context.channel_catalog.add_channel(payload)})
+                    return
+                if parsed.path == "/api/channels/delete":
+                    self._send_json(
+                        context.channel_catalog.delete_channel(str(payload.get("streamId") or payload.get("id") or ""))
+                    )
+                    return
+                if parsed.path == "/api/channels/refresh":
+                    sources = parse_catalog_sources(payload.get("sources") or context.channel_sources)
+                    self._send_json({"refresh": context.channel_catalog.refresh_from_sources(sources)})
+                    return
                 if parsed.path == "/api/engine/start":
                     self._send_json({"engine": context.engine.start()})
                     return
@@ -155,6 +176,8 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
                     return
                 self._send_json({"error": "Not found"}, status=404)
             except ClipLibraryError as exc:
+                self._send_json({"error": str(exc)}, status=exc.status)
+            except ChannelCatalogError as exc:
                 self._send_json({"error": str(exc)}, status=exc.status)
             except StreamInputError as exc:
                 self._send_json({"error": str(exc)}, status=exc.status)
@@ -179,6 +202,10 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
                 "engine": context.engine.status(),
                 "highlighter": context.highlighter.status(),
                 "stream": stream,
+                "channels": {
+                    "count": len(context.channel_catalog.list_payload().get("channels", [])),
+                    "sources": len(context.channel_sources),
+                },
                 "mode": {
                     "dryRun": bool(context.config.dry_run),
                     "streamOnly": bool(context.config.stream_only.enabled),
@@ -303,6 +330,8 @@ def main() -> None:
         dry_run_override = False
 
     config = load_config(args.config, dry_run_override=dry_run_override)
+    channel_sources = parse_catalog_sources(args.channel_catalog_sources or os.getenv("CHANNEL_CATALOG_URLS", ""))
+    channel_catalog = ChannelCatalog(Path(config.output.state_dir) / "channels.json")
     settings = HighlighterSettings(
         config_path=args.config,
         log_level=args.log_level,
@@ -314,6 +343,8 @@ def main() -> None:
     context = UiContext(
         config=config,
         clip_library=ClipLibrary(config),
+        channel_catalog=channel_catalog,
+        channel_sources=channel_sources,
         highlighter=HighlighterSupervisor(settings),
         engine=EngineSupervisor(
             container_name=args.engine_container,
@@ -330,6 +361,13 @@ def main() -> None:
     if not args.no_auto_start:
         context.highlighter.start()
 
+    refresh_worker = ChannelRefreshWorker(
+        channel_catalog,
+        channel_sources,
+        interval_seconds=int(os.getenv("CHANNEL_REFRESH_SECONDS", str(args.channel_refresh_seconds))),
+    )
+    refresh_worker.start()
+
     server = bind_server(context)
     print(f"Football Highlighter UI: http://{context.host}:{context.port}", flush=True)
     try:
@@ -337,6 +375,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        refresh_worker.stop()
         context.highlighter.stop()
         server.server_close()
 

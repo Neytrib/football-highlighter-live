@@ -21,6 +21,7 @@ data/clips_categories/
 data/goals/*.json
 data/state/*.json
 data/state/*.log
+data/state/*.png
 data/tmp/
 
 # Local sample recordings

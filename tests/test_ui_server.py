@@ -1,4 +1,5 @@
 from app.config import AppConfig
+from app.ui.channel_catalog import ChannelCatalog
 from app.ui.clip_library import ClipLibrary
 from app.ui.server import UiContext, make_handler
 from app.ui.supervisor import HighlighterSettings, HighlighterSupervisor
@@ -27,6 +28,8 @@ def test_status_endpoint_serves_json_without_api_token(tmp_path) -> None:
     context = UiContext(
         config=cfg,
         clip_library=ClipLibrary(cfg),
+        channel_catalog=ChannelCatalog(tmp_path / "channels.json"),
+        channel_sources=[],
         highlighter=HighlighterSupervisor(HighlighterSettings(config_path="configs/config.yaml")),
         engine=_Engine(),  # type: ignore[arg-type]
         host="127.0.0.1",

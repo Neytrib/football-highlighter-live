@@ -1,8 +1,37 @@
+const CATALOG_SOURCE_STORAGE_KEY = "footballHighlighterChannelCatalogSources";
+
+function parseCatalogSources(value) {
+  return String(value || "")
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readCatalogSources() {
+  try {
+    return parseCatalogSources(localStorage.getItem(CATALOG_SOURCE_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function writeCatalogSources(sources) {
+  try {
+    localStorage.setItem(CATALOG_SOURCE_STORAGE_KEY, sources.join(", "));
+  } catch {
+    // Browser storage can be unavailable in hardened local contexts.
+  }
+}
+
 const state = {
   status: null,
   clips: [],
   categories: [],
+  channels: [],
   activeCategory: "all",
+  channelQuery: "",
+  channelLanguage: "all",
+  channelSources: readCatalogSources(),
 };
 
 const els = {
@@ -17,6 +46,18 @@ const els = {
   streamHint: document.getElementById("streamHint"),
   streamForm: document.getElementById("streamForm"),
   streamIdInput: document.getElementById("streamIdInput"),
+  refreshChannels: document.getElementById("refreshChannels"),
+  channelCount: document.getElementById("channelCount"),
+  channelSearch: document.getElementById("channelSearch"),
+  channelLanguage: document.getElementById("channelLanguage"),
+  catalogSourceForm: document.getElementById("catalogSourceForm"),
+  catalogSourceInput: document.getElementById("catalogSourceInput"),
+  channelForm: document.getElementById("channelForm"),
+  channelNameInput: document.getElementById("channelNameInput"),
+  channelIdInput: document.getElementById("channelIdInput"),
+  channelLangInput: document.getElementById("channelLangInput"),
+  channelQualityInput: document.getElementById("channelQualityInput"),
+  channelList: document.getElementById("channelList"),
   clipCount: document.getElementById("clipCount"),
   categoryTabs: document.getElementById("categoryTabs"),
   clipList: document.getElementById("clipList"),
@@ -77,8 +118,28 @@ async function refreshClips() {
   renderClips();
 }
 
+async function refreshChannels() {
+  const payload = await api("/api/channels");
+  state.channels = payload.channels || [];
+  renderChannels();
+}
+
+async function importConfiguredChannelSources() {
+  const sources = parseCatalogSources(els.catalogSourceInput.value);
+  state.channelSources = sources;
+  writeCatalogSources(sources);
+  if (!sources.length) {
+    await refreshChannels();
+    setMessage("No catalog sources configured");
+    return;
+  }
+  const payload = await post("/api/channels/refresh", { sources });
+  await refreshChannels();
+  setMessage(payload.refresh?.message || "Channels refreshed");
+}
+
 async function refreshAll() {
-  await Promise.all([refreshStatus(), refreshLogs(), refreshClips()]);
+  await Promise.all([refreshStatus(), refreshLogs(), refreshClips(), refreshChannels()]);
 }
 
 function renderStatus() {
@@ -146,6 +207,44 @@ function renderClips() {
           <button class="button" type="button" data-action="rename" data-root="${escapeAttr(clip.root)}" data-path="${escapeAttr(clip.path)}" data-name="${escapeAttr(clip.name)}">Rename</button>
           <button class="button" type="button" data-action="move" data-root="${escapeAttr(clip.root)}" data-path="${escapeAttr(clip.path)}">Move</button>
           <button class="button danger" type="button" data-action="delete" data-root="${escapeAttr(clip.root)}" data-path="${escapeAttr(clip.path)}" data-name="${escapeAttr(clip.name)}">Delete</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderChannels() {
+  const activeId = state.status?.stream?.id || "";
+  const query = state.channelQuery.toLowerCase();
+  const channels = state.channels.filter((channel) => {
+    const languageMatch = state.channelLanguage === "all" || channel.language === state.channelLanguage;
+    const text = `${channel.name || ""} ${channel.language || ""} ${channel.quality || ""} ${channel.source || ""}`.toLowerCase();
+    return languageMatch && (!query || text.includes(query));
+  });
+
+  els.channelCount.textContent = `${channels.length} channel${channels.length === 1 ? "" : "s"}`;
+  if (!channels.length) {
+    els.channelList.innerHTML = '<div class="empty">No channels in this view</div>';
+    return;
+  }
+
+  els.channelList.innerHTML = channels.map((channel) => {
+    const active = channel.streamId === activeId ? '<span class="badge active-badge">Active</span>' : "";
+    const source = channel.source && channel.source !== "manual" ? `<span class="channel-source">${escapeHtml(channel.source)}</span>` : "";
+    return `
+      <article class="channel-row">
+        <div class="channel-main">
+          <div class="channel-title">
+            <span class="channel-name">${escapeHtml(channel.name)}</span>
+            ${active}
+            <span class="badge">${escapeHtml((channel.language || "other").toUpperCase())}</span>
+            ${channel.quality ? `<span class="badge">${escapeHtml(channel.quality)}</span>` : ""}
+          </div>
+          <div class="channel-meta">${escapeHtml(channel.streamId)} ${source}</div>
+        </div>
+        <div class="channel-actions">
+          <button class="button primary" type="button" data-channel-action="use" data-stream-id="${escapeAttr(channel.streamId)}">Use</button>
+          <button class="button danger" type="button" data-channel-action="delete" data-stream-id="${escapeAttr(channel.streamId)}" data-name="${escapeAttr(channel.name)}">Delete</button>
         </div>
       </article>
     `;
@@ -272,6 +371,14 @@ function escapeAttr(value) {
 
 document.getElementById("refreshAll").addEventListener("click", () => refreshAll().catch((error) => setMessage(error.message)));
 document.getElementById("refreshLogs").addEventListener("click", () => refreshLogs().catch((error) => setMessage(error.message)));
+els.refreshChannels.addEventListener("click", async () => {
+  try {
+    setMessage("Refreshing channels...");
+    await importConfiguredChannelSources();
+  } catch (error) {
+    setMessage(error.message);
+  }
+});
 
 document.querySelectorAll("[data-command]").forEach((button) => {
   button.addEventListener("click", () => runCommand(button.dataset.command));
@@ -303,6 +410,78 @@ els.clipList.addEventListener("click", (event) => {
   handleClipAction(button);
 });
 
+els.channelSearch.addEventListener("input", () => {
+  state.channelQuery = els.channelSearch.value.trim();
+  renderChannels();
+});
+
+els.channelLanguage.addEventListener("change", () => {
+  state.channelLanguage = els.channelLanguage.value;
+  renderChannels();
+});
+
+els.catalogSourceForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    setMessage("Checking channel catalog...");
+    await importConfiguredChannelSources();
+  } catch (error) {
+    setMessage(error.message);
+  }
+});
+
+els.channelList.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-channel-action]");
+  if (!button) return;
+  const streamId = button.dataset.streamId;
+  const action = button.dataset.channelAction;
+  try {
+    if (action === "use") {
+      setMessage("Setting channel stream...");
+      await post("/api/stream", { streamId, restartHighlighter: true });
+      await refreshStatus();
+      renderChannels();
+      setMessage("Channel selected");
+    }
+    if (action === "delete") {
+      const confirmed = await askModal({
+        title: "Delete Channel",
+        text: `Delete ${button.dataset.name || "this channel"} from the local list?`,
+        input: false,
+        confirm: "Delete",
+      });
+      if (!confirmed) return;
+      await post("/api/channels/delete", { streamId });
+      await refreshChannels();
+      setMessage("Channel deleted");
+    }
+  } catch (error) {
+    setMessage(error.message);
+  }
+});
+
+els.channelForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = els.channelNameInput.value.trim();
+  const streamId = els.channelIdInput.value.trim();
+  if (!streamId) return;
+  try {
+    await post("/api/channels", {
+      name,
+      streamId,
+      language: els.channelLangInput.value,
+      quality: els.channelQualityInput.value.trim(),
+    });
+    els.channelNameInput.value = "";
+    els.channelIdInput.value = "";
+    els.channelQualityInput.value = "";
+    await refreshChannels();
+    setMessage("Channel added");
+  } catch (error) {
+    setMessage(error.message);
+  }
+});
+
 els.categoryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const name = els.categoryName.value.trim();
@@ -331,6 +510,8 @@ els.streamForm.addEventListener("submit", async (event) => {
   }
 });
 
+els.catalogSourceInput.value = state.channelSources.join(", ");
+
 refreshAll().catch((error) => setMessage(error.message));
 setInterval(() => {
   refreshStatus().catch(() => {});
@@ -339,3 +520,9 @@ setInterval(() => {
 setInterval(() => {
   refreshClips().catch(() => {});
 }, 12000);
+setInterval(() => {
+  if (!state.channelSources.length) return;
+  post("/api/channels/refresh", { sources: state.channelSources })
+    .then(() => refreshChannels())
+    .catch(() => {});
+}, 60000);

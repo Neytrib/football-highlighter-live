@@ -118,7 +118,37 @@ Open:
 http://127.0.0.1:5174
 ```
 
-The dashboard shows AceStream/highlighter status, recent JSON logs, a stream preview/open action, and a clip library for raw, cropped, uncertain, VAR, and custom categories. You can add a stream by pasting a bare AceStream ID, an `acestream://...` link, or an existing local `getstream?id=...` URL into the Stream panel. Rename, delete, and move actions change files directly on disk and are guarded by backend path checks.
+The dashboard shows AceStream/highlighter status, recent JSON logs, a stream preview/open action, a local channel catalog, and a clip library for raw, cropped, uncertain, VAR, and custom categories. You can add a stream by pasting a bare AceStream ID, an `acestream://...` link, or an existing local `getstream?id=...` URL into the Stream panel. Rename, delete, and move actions change files directly on disk and are guarded by backend path checks.
+
+### Local Channel Catalog
+
+Channels are stored locally in `data/state/channels.json`. The dashboard can add, delete, search, filter by language, sort higher-quality entries first, and set the active stream from a channel row.
+
+Manual entries accept the same stream input formats as the Stream panel. Optional automatic refresh imports only configured JSON catalogs; it does not scrape arbitrary web pages. In the Channels panel, paste a comma-separated JSON catalog URL or file path into the catalog source field and click `Check`; the browser remembers those sources and re-checks them every minute while the page is open.
+
+You can also configure lawful catalog sources with comma-separated URLs or file paths before starting the server:
+
+```bash
+CHANNEL_CATALOG_URLS="https://example.test/channels.json,/absolute/path/to/channels.json" npm run dev
+```
+
+Catalog JSON can be either a list or an object with a `channels` list:
+
+```json
+{
+  "channels": [
+    {
+      "name": "Example Channel",
+      "stream": "acestream://e38b33c56332de27ff25df223cdf488b1ec6051f/",
+      "language": "en",
+      "quality": "1080p",
+      "source": "local-catalog"
+    }
+  ]
+}
+```
+
+The UI refreshes configured catalogs every minute while open, and the server also refreshes configured sources every minute while running.
 
 To create real clips instead of dry-run events:
 
@@ -131,6 +161,8 @@ Useful UI environment variables:
 - `UI_HOST`: dashboard bind host, default `127.0.0.1`
 - `UI_PORT`: dashboard port, default `5174`
 - `DRY_RUN`: set `0` to enable clipping
+- `CHANNEL_CATALOG_URLS`: comma-separated lawful JSON catalog URLs or file paths
+- `CHANNEL_REFRESH_SECONDS`: server-side catalog refresh interval, default `60`
 
 ## Running The CLI Directly
 

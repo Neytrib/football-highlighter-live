@@ -54,30 +54,67 @@
           <div id="streamHint" class="hint">No stream configured</div>
         </div>
 
-        <div class="panel controls-panel">
-          <div class="panel-head">
-            <h2>Controls</h2>
-            <span id="lastUpdated" class="subtle">Waiting</span>
-          </div>
-          <div class="control-groups">
-            <div class="control-group">
-              <h3>AceStream</h3>
-              <div class="button-row">
-                <button class="button success" data-command="/api/engine/start" type="button">Start</button>
-                <button class="button danger" data-command="/api/engine/stop" type="button">Stop</button>
-                <button class="button" data-command="/api/engine/restart" type="button">Restart</button>
+        <div class="side-stack">
+          <div class="panel controls-panel">
+            <div class="panel-head">
+              <h2>Controls</h2>
+              <span id="lastUpdated" class="subtle">Waiting</span>
+            </div>
+            <div class="control-groups">
+              <div class="control-group">
+                <h3>AceStream</h3>
+                <div class="button-row">
+                  <button class="button success" data-command="/api/engine/start" type="button">Start</button>
+                  <button class="button danger" data-command="/api/engine/stop" type="button">Stop</button>
+                  <button class="button" data-command="/api/engine/restart" type="button">Restart</button>
+                </div>
+              </div>
+              <div class="control-group">
+                <h3>Highlighter</h3>
+                <div class="button-row">
+                  <button class="button success" data-command="/api/highlighter/start" type="button">Start</button>
+                  <button class="button danger" data-command="/api/highlighter/stop" type="button">Stop</button>
+                  <button class="button" data-command="/api/highlighter/restart" type="button">Restart</button>
+                </div>
               </div>
             </div>
-            <div class="control-group">
-              <h3>Highlighter</h3>
-              <div class="button-row">
-                <button class="button success" data-command="/api/highlighter/start" type="button">Start</button>
-                <button class="button danger" data-command="/api/highlighter/stop" type="button">Stop</button>
-                <button class="button" data-command="/api/highlighter/restart" type="button">Restart</button>
-              </div>
-            </div>
+            <div id="commandMessage" class="message" role="status"></div>
           </div>
-          <div id="commandMessage" class="message" role="status"></div>
+
+          <div class="panel channels-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Channels</h2>
+                <span id="channelCount" class="subtle">0 channels</span>
+              </div>
+              <button id="refreshChannels" class="button" type="button">Refresh</button>
+            </div>
+            <div class="channel-tools">
+              <input id="channelSearch" type="search" autocomplete="off" placeholder="Search channels" aria-label="Search channels">
+              <select id="channelLanguage" aria-label="Filter channel language">
+                <option value="all">All languages</option>
+                <option value="ru">RU</option>
+                <option value="en">EN</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <form id="catalogSourceForm" class="catalog-source-form">
+              <input id="catalogSourceInput" type="text" autocomplete="off" placeholder="JSON catalog URL or file path" aria-label="Channel catalog source">
+              <button class="button" type="submit">Check</button>
+            </form>
+            <form id="channelForm" class="channel-form">
+              <input id="channelNameInput" type="text" autocomplete="off" placeholder="Channel name" aria-label="Channel name">
+              <input id="channelIdInput" type="text" autocomplete="off" placeholder="ID or acestream:// link" aria-label="Channel stream ID">
+              <select id="channelLangInput" aria-label="Channel language">
+                <option value="ru">RU</option>
+                <option value="en">EN</option>
+                <option value="other">Other</option>
+              </select>
+              <input id="channelQualityInput" type="text" autocomplete="off" placeholder="1080p" aria-label="Channel quality">
+              <button class="button primary" type="submit">Add</button>
+            </form>
+            <div id="channelList" class="channel-list"></div>
+          </div>
         </div>
       </section>
 
