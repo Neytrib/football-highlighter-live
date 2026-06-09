@@ -1,5 +1,6 @@
 const CATALOG_SOURCE_STORAGE_KEY = "footballHighlighterChannelCatalogSources";
-const LIVE_PREVIEW_REFRESH_MS = 2500;
+const LIVE_PREVIEW_REFRESH_MS = 1000;
+const HLS_RECOVERY_BACKOFF_MS = 5000;
 
 function parseCatalogSources(value) {
   return String(value || "")
@@ -36,10 +37,15 @@ const state = {
   livePreview: {
     selectedAt: 0,
     streamKey: "",
-    lastName: "",
+    generation: 0,
+    pendingStreamId: "",
+    pendingMode: "",
+    activeMode: "",
+    segmentName: "",
     hls: null,
     hlsUrl: "",
     hlsFailedUntil: 0,
+    hlsRecovered: false,
   },
 };
 
@@ -134,13 +140,21 @@ async function refreshChannels() {
 }
 
 async function refreshLivePreview() {
+  let refreshGeneration = state.livePreview.generation;
   const recordedStream = state.status?.stream || {};
   const liveStream = state.status?.live || {};
   const previewStream = liveStream.configured ? liveStream : recordedStream;
   if (!previewStream.configured) {
+    bumpLivePreviewGeneration();
+    clearPendingLivePreviewSwitch();
     state.livePreview.streamKey = "";
     resetLivePlayer();
     els.streamHint.textContent = "No stream configured";
+    return;
+  }
+
+  if (!livePreviewTargetIsCurrent(recordedStream, liveStream, previewStream)) {
+    els.streamHint.textContent = "Starting selected stream";
     return;
   }
 
@@ -153,35 +167,38 @@ async function refreshLivePreview() {
   if (state.livePreview.streamKey !== streamKey) {
     state.livePreview.streamKey = streamKey;
     state.livePreview.hlsFailedUntil = 0;
+    refreshGeneration = bumpLivePreviewGeneration();
     resetLivePlayer();
   }
 
   const payload = await api("/api/live/latest");
-  const hlsAllowed = payload.hlsAvailable && Date.now() >= state.livePreview.hlsFailedUntil;
+  if (refreshGeneration !== state.livePreview.generation) return;
+
+  const hlsAllowed = payload.hlsReady && Date.now() >= state.livePreview.hlsFailedUntil;
   if (hlsAllowed) {
-    attachLivePlayer(versionedLiveUrl(payload.hlsUrl || "/api/live/hls/stream.m3u8"));
+    attachLivePlayer(versionedLiveUrl(payload.hlsUrl || "/api/live/hls/stream.m3u8"), refreshGeneration);
     const age = payload.available ? Number(payload.ageSeconds || 0) : 0;
-    els.streamHint.textContent = `Live HLS: ${titleCase(liveStream.state || "recording")} · ${age}s behind · ${previewStream.playbackUrl || ""}`;
+    const mode = payload.playbackMode === "external_hls" ? "External HLS" : "Live HLS";
+    els.streamHint.textContent = `${mode}: ${titleCase(liveStream.state || "recording")} · ${age}s behind · ${previewStream.playbackUrl || ""}`;
     return;
   }
 
   if (!payload.available) {
-    els.streamHint.textContent = "Waiting for the local stream buffer";
+    els.streamHint.textContent = payload.hlsAvailable ? "Starting live preview" : "Connecting live preview";
     return;
   }
 
   if (state.livePreview.selectedAt && payload.mtime < state.livePreview.selectedAt - 2) {
-    els.streamHint.textContent = "Waiting for fresh video from the selected channel";
+    els.streamHint.textContent = "Starting selected stream";
     return;
   }
 
-  if (payload.name && payload.name !== state.livePreview.lastName) {
-    state.livePreview.lastName = payload.name;
-    attachSegmentPlayer(payload.mediaUrl, payload.frameUrl);
+  if (payload.name && shouldAdvanceSegment(payload.name)) {
+    attachSegmentPlayer(payload.mediaUrl, payload.frameUrl, payload.name);
   }
 
   const age = Number(payload.ageSeconds || 0);
-  const mode = payload.hlsAvailable ? "HLS unavailable, using segment fallback" : "Waiting for HLS playlist";
+  const mode = payload.hlsAvailable ? "stabilizing HLS" : "live segment fallback";
   els.streamHint.textContent = `Live segment: ${payload.name} · ${age}s behind · ${mode}`;
 }
 
@@ -191,10 +208,65 @@ function resetLivePlayer() {
     state.livePreview.hls = null;
   }
   state.livePreview.hlsUrl = "";
-  state.livePreview.lastName = "";
+  state.livePreview.activeMode = "";
+  state.livePreview.segmentName = "";
+  state.livePreview.hlsRecovered = false;
+  els.streamPreview.controls = false;
   els.streamPreview.removeAttribute("src");
   els.streamPreview.removeAttribute("poster");
   els.streamPreview.load();
+}
+
+function bumpLivePreviewGeneration() {
+  state.livePreview.generation += 1;
+  return state.livePreview.generation;
+}
+
+function streamIdFromValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const acestreamMatch = raw.match(/acestream:\/\/([a-f0-9]{40})/i);
+  if (acestreamMatch) return acestreamMatch[1].toLowerCase();
+
+  try {
+    const url = new URL(raw);
+    const id = url.searchParams.get("id");
+    if (id) return id.toLowerCase();
+  } catch {
+    // Plain stream IDs are expected here; URL parsing is only for pasted links.
+  }
+
+  return raw.toLowerCase();
+}
+
+function beginLivePreviewSwitch(streamId, mode) {
+  state.livePreview.selectedAt = Date.now() / 1000;
+  state.livePreview.pendingStreamId = streamIdFromValue(streamId);
+  state.livePreview.pendingMode = mode;
+  state.livePreview.streamKey = "";
+  state.livePreview.hlsFailedUntil = 0;
+  bumpLivePreviewGeneration();
+  resetLivePlayer();
+  els.streamHint.textContent = "Starting selected stream";
+}
+
+function clearPendingLivePreviewSwitch() {
+  state.livePreview.pendingStreamId = "";
+  state.livePreview.pendingMode = "";
+}
+
+function livePreviewTargetIsCurrent(recordedStream, liveStream, previewStream) {
+  const pendingId = state.livePreview.pendingStreamId;
+  if (!pendingId) return true;
+
+  const activeId = state.livePreview.pendingMode === "recording"
+    ? recordedStream.id
+    : previewStream.id || liveStream.id;
+  if (streamIdFromValue(activeId) !== pendingId) return false;
+
+  clearPendingLivePreviewSwitch();
+  return true;
 }
 
 function versionedLiveUrl(url) {
@@ -202,13 +274,25 @@ function versionedLiveUrl(url) {
   return `${url}${separator}v=${encodeURIComponent(state.livePreview.streamKey || Date.now())}`;
 }
 
-function attachSegmentPlayer(mediaUrl, frameUrl) {
+function shouldAdvanceSegment(name) {
+  if (!name || name === state.livePreview.segmentName) return false;
+  if (state.livePreview.activeMode !== "segment") return true;
+  const video = els.streamPreview;
+  if (video.ended || video.readyState === 0) return true;
+  if (!Number.isFinite(video.duration) || video.duration <= 0) return false;
+  return video.currentTime >= Math.max(0, video.duration - 0.2);
+}
+
+function attachSegmentPlayer(mediaUrl, frameUrl, name) {
   if (!mediaUrl) return;
   if (state.livePreview.hls) {
     state.livePreview.hls.destroy();
     state.livePreview.hls = null;
   }
   state.livePreview.hlsUrl = "";
+  state.livePreview.activeMode = "segment";
+  state.livePreview.segmentName = name || "";
+  els.streamPreview.controls = true;
   els.streamPreview.muted = true;
   els.streamPreview.playsInline = true;
   els.streamPreview.poster = frameUrl ? `${frameUrl}&ts=${Date.now()}` : "";
@@ -217,10 +301,13 @@ function attachSegmentPlayer(mediaUrl, frameUrl) {
   els.streamPreview.play().catch(() => {});
 }
 
-function attachLivePlayer(url) {
+function attachLivePlayer(url, generation = state.livePreview.generation) {
+  if (generation !== state.livePreview.generation) return;
   if (state.livePreview.hlsUrl === url) return;
   resetLivePlayer();
   state.livePreview.hlsUrl = url;
+  state.livePreview.activeMode = "hls";
+  els.streamPreview.controls = true;
   els.streamPreview.muted = true;
   els.streamPreview.playsInline = true;
 
@@ -232,19 +319,29 @@ function attachLivePlayer(url) {
 
   if (window.Hls && window.Hls.isSupported()) {
     const hls = new window.Hls({
-      liveSyncDurationCount: 3,
-      backBufferLength: 12,
-      maxBufferLength: 16,
+      liveSyncDurationCount: 2,
+      liveMaxLatencyDurationCount: 4,
+      backBufferLength: 8,
+      maxBufferLength: 10,
+      lowLatencyMode: true,
+      maxLiveSyncPlaybackRate: 1.25,
     });
     state.livePreview.hls = hls;
     hls.loadSource(url);
     hls.attachMedia(els.streamPreview);
     hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+      if (generation !== state.livePreview.generation) return;
       els.streamPreview.play().catch(() => {});
     });
     hls.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (generation !== state.livePreview.generation) return;
       if (data?.fatal) {
-        state.livePreview.hlsFailedUntil = Date.now() + 10000;
+        if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && !state.livePreview.hlsRecovered) {
+          state.livePreview.hlsRecovered = true;
+          hls.recoverMediaError();
+          return;
+        }
+        state.livePreview.hlsFailedUntil = Date.now() + HLS_RECOVERY_BACKOFF_MS;
         els.streamHint.textContent = `Live player error: ${data.type || "unknown"}`;
         resetLivePlayer();
         refreshLivePreview().catch(() => {});
@@ -301,7 +398,7 @@ function renderStatus() {
     resetLivePlayer();
     els.streamHint.textContent = "No stream configured";
   } else if (!state.livePreview.hlsUrl && !els.streamPreview.poster) {
-    els.streamHint.textContent = "Waiting for the local stream buffer";
+    els.streamHint.textContent = "Starting live preview";
   }
 }
 
@@ -646,10 +743,7 @@ els.channelList.addEventListener("click", async (event) => {
     try {
       if (action === "live") {
         setMessage("Opening live view...");
-        state.livePreview.selectedAt = Date.now() / 1000;
-        state.livePreview.streamKey = "";
-        state.livePreview.hlsFailedUntil = 0;
-        state.livePreview.lastName = "";
+        beginLivePreviewSwitch(streamId, "live");
         await post("/api/live", { streamId });
         await refreshStatus();
         await refreshLivePreview();
@@ -676,6 +770,7 @@ els.channelList.addEventListener("click", async (event) => {
         setMessage("Channel deleted");
       }
     } catch (error) {
+      clearPendingLivePreviewSwitch();
       setMessage(error.message);
     }
   });
@@ -730,8 +825,7 @@ els.streamForm.addEventListener("submit", async (event) => {
       setMessage("Updating recording stream...");
       const previewRecordingStream = !state.status?.live?.configured;
       if (previewRecordingStream) {
-        state.livePreview.selectedAt = Date.now() / 1000;
-        state.livePreview.lastName = "";
+        beginLivePreviewSwitch(streamId, "recording");
       }
       const payload = await post("/api/stream", { streamId, restartHighlighter: true, startHighlighter: true });
       await refreshStatus();
@@ -740,12 +834,26 @@ els.streamForm.addEventListener("submit", async (event) => {
       }
       setRecordingMessage(payload);
     } catch (error) {
+      clearPendingLivePreviewSwitch();
       setMessage(error.message);
     }
   });
 });
 
 els.catalogSourceInput.value = state.channelSources.join(", ");
+
+els.streamPreview.addEventListener("ended", () => {
+  if (state.livePreview.activeMode === "segment") {
+    refreshLivePreview().catch(() => {});
+  }
+});
+
+els.streamPreview.addEventListener("error", () => {
+  if (state.livePreview.activeMode === "segment") {
+    state.livePreview.segmentName = "";
+    refreshLivePreview().catch(() => {});
+  }
+});
 
 refreshAll().catch((error) => setMessage(error.message));
 setInterval(() => {

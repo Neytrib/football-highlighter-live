@@ -27,6 +27,7 @@ from app.ui.supervisor import EngineSupervisor, HighlighterSettings, Highlighter
 
 STATIC_DIR = Path(__file__).parent / "static"
 DEFAULT_CHANNEL_SEED = "configs/channels.json"
+LIVE_SWITCH_FRESHNESS_GRACE_SECONDS = 2.0
 
 
 @dataclass
@@ -418,28 +419,73 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
         def _live_latest_payload(self) -> dict[str, Any]:
             hls_path = self._live_hls_dir() / "stream.m3u8"
             external_hls_url = context.live_preview.external_hls_url()
+            fresh_after = self._live_fresh_after()
+            hls_available, hls_ready, hls_segment_count = self._hls_state(
+                hls_path,
+                bool(external_hls_url),
+                fresh_after,
+            )
             latest, latest_stat = self._find_latest_segment()
             if latest is None or latest_stat is None:
                 return {
                     "available": False,
-                    "message": "No stream buffer yet",
-                    "hlsAvailable": bool(external_hls_url) or hls_path.exists(),
+                    "message": "Starting live preview",
+                    "playbackMode": "external_hls" if external_hls_url else ("local_hls" if hls_ready else "warming"),
+                    "hlsAvailable": hls_available,
+                    "hlsReady": hls_ready,
+                    "hlsSegmentCount": hls_segment_count,
                     "hlsUrl": "/api/live/hls/stream.m3u8",
+                    "startedAt": context.live_preview.started_at or None,
+                    "segmentSeconds": context.config.stream.segment_seconds,
+                    "startupTargetSeconds": context.config.stream.live_startup_target_seconds,
                 }
 
             encoded_name = quote(latest.name)
 
             return {
                 "available": True,
+                "playbackMode": "external_hls" if external_hls_url else ("local_hls" if hls_ready else "segment"),
                 "name": latest.name,
                 "size": latest_stat.st_size,
                 "mtime": latest_stat.st_mtime,
                 "ageSeconds": max(0, int(time() - latest_stat.st_mtime)),
                 "mediaUrl": f"/api/live/segment?name={encoded_name}",
                 "frameUrl": f"/api/live/frame?name={encoded_name}",
-                "hlsAvailable": bool(external_hls_url) or hls_path.exists(),
+                "hlsAvailable": hls_available,
+                "hlsReady": hls_ready,
+                "hlsSegmentCount": hls_segment_count,
                 "hlsUrl": "/api/live/hls/stream.m3u8",
+                "startedAt": context.live_preview.started_at or None,
+                "segmentSeconds": context.config.stream.segment_seconds,
+                "startupTargetSeconds": context.config.stream.live_startup_target_seconds,
             }
+
+        def _hls_state(self, hls_path: Path, external_hls: bool, fresh_after: float) -> tuple[bool, bool, int | None]:
+            if external_hls:
+                return True, True, None
+            if not hls_path.exists() or not hls_path.is_file():
+                return False, False, 0
+            try:
+                if hls_path.stat().st_mtime < fresh_after:
+                    return False, False, 0
+            except OSError:
+                return False, False, 0
+            segment_count = self._hls_segment_count(hls_path)
+            required_segments = max(1, int(context.config.stream.hls_startup_segments))
+            return True, segment_count >= required_segments, segment_count
+
+        def _live_fresh_after(self) -> float:
+            if not context.live_preview.is_active() or not context.live_preview.started_at:
+                return 0.0
+            return max(0.0, context.live_preview.started_at - LIVE_SWITCH_FRESHNESS_GRACE_SECONDS)
+
+        @staticmethod
+        def _hls_segment_count(hls_path: Path) -> int:
+            try:
+                text = hls_path.read_text(encoding="utf-8")
+            except OSError:
+                return 0
+            return sum(1 for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
 
         def _serve_live_hls_asset(self, request_path: str) -> None:
             external_hls_url = context.live_preview.external_hls_url()
@@ -525,6 +571,13 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
             if not path.exists() or not path.is_file():
                 self._send_json({"error": "Not found"}, status=404)
                 return
+            try:
+                if path.stat().st_mtime < self._live_fresh_after():
+                    self._send_json({"error": "Not found"}, status=404)
+                    return
+            except OSError:
+                self._send_json({"error": "Not found"}, status=404)
+                return
             self._send_file(path, ranged=True)
 
         def _serve_live_frame(self, query_string: str) -> None:
@@ -571,12 +624,15 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
                 return None, None
 
             now = time()
+            fresh_after = self._live_fresh_after()
             candidates: list[tuple[Path, os.stat_result]] = []
             for path in segment_dir.glob("segment_*.mp4"):
                 if not path.is_file():
                     continue
                 stat = path.stat()
                 if stat.st_size <= 0:
+                    continue
+                if stat.st_mtime < fresh_after:
                     continue
                 candidates.append((path, stat))
 
@@ -600,6 +656,11 @@ def make_handler(context: UiContext) -> type[BaseHTTPRequestHandler]:
             except ValueError:
                 return None
             if not path.exists() or not path.is_file():
+                return None
+            try:
+                if path.stat().st_mtime < self._live_fresh_after():
+                    return None
+            except OSError:
                 return None
             return path
 

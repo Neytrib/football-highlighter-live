@@ -236,7 +236,58 @@ def test_live_latest_payload_uses_newest_segment(tmp_path) -> None:
     assert payload["mediaUrl"] == f"/api/live/segment?name={new_segment.name}"
     assert payload["frameUrl"] == f"/api/live/frame?name={new_segment.name}"
     assert payload["hlsAvailable"] is True
+    assert payload["hlsReady"] is False
+    assert payload["hlsSegmentCount"] == 0
+    assert payload["playbackMode"] == "segment"
     assert payload["hlsUrl"] == "/api/live/hls/stream.m3u8"
+
+
+def test_live_latest_payload_marks_local_hls_ready_after_startup_segments(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    context.config.stream.hls_startup_segments = 2
+    hls_dir = Path(context.config.output.tmp_dir) / "hls"
+    hls_dir.mkdir(parents=True)
+    (hls_dir / "stream.m3u8").write_text(
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\nlive_00001.ts\nlive_00002.ts\n",
+        encoding="utf-8",
+    )
+
+    handler = object.__new__(make_handler(context))
+    payload = handler._live_latest_payload()
+
+    assert payload["available"] is False
+    assert payload["hlsAvailable"] is True
+    assert payload["hlsReady"] is True
+    assert payload["hlsSegmentCount"] == 2
+    assert payload["playbackMode"] == "local_hls"
+    assert payload["segmentSeconds"] == context.config.stream.segment_seconds
+    assert payload["startupTargetSeconds"] == context.config.stream.live_startup_target_seconds
+
+
+def test_live_latest_payload_defers_local_hls_until_startup_window(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    context.config.stream.hls_startup_segments = 2
+    segment_dir = Path(context.config.output.tmp_dir) / "segments"
+    hls_dir = Path(context.config.output.tmp_dir) / "hls"
+    segment_dir.mkdir(parents=True)
+    hls_dir.mkdir(parents=True)
+    segment = segment_dir / "segment_20260606T190002.mp4"
+    segment.write_bytes(b"segment")
+    os.utime(segment, (200, 200))
+    (hls_dir / "stream.m3u8").write_text(
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\nlive_00001.ts\n",
+        encoding="utf-8",
+    )
+
+    handler = object.__new__(make_handler(context))
+    payload = handler._live_latest_payload()
+
+    assert payload["available"] is True
+    assert payload["hlsAvailable"] is True
+    assert payload["hlsReady"] is False
+    assert payload["hlsSegmentCount"] == 1
+    assert payload["playbackMode"] == "segment"
+    assert payload["mediaUrl"] == f"/api/live/segment?name={segment.name}"
 
 
 def test_live_latest_payload_uses_mirrored_recording_buffer(tmp_path) -> None:
@@ -256,10 +307,12 @@ def test_live_latest_payload_uses_mirrored_recording_buffer(tmp_path) -> None:
     (preview_hls_dir / "stream.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
     recording_segment.write_bytes(b"recording")
     preview_segment.write_bytes(b"preview")
-    os.utime(recording_segment, (300, 300))
     os.utime(preview_segment, (400, 400))
 
     context.live_preview.use_existing(stream_url, recording_dir, recording_hls_dir)
+    fresh_time = context.live_preview.started_at
+    os.utime(recording_segment, (fresh_time, fresh_time))
+    os.utime(recording_hls_dir / "stream.m3u8", (fresh_time, fresh_time))
     handler = object.__new__(make_handler(context))
     payload = handler._live_latest_payload()
 
@@ -269,6 +322,56 @@ def test_live_latest_payload_uses_mirrored_recording_buffer(tmp_path) -> None:
     assert payload["name"] == recording_segment.name
     assert payload["size"] == 9
     assert payload["hlsAvailable"] is True
+    assert payload["hlsReady"] is False
+    assert payload["playbackMode"] == "segment"
+
+
+def test_live_latest_payload_ignores_pre_switch_mirrored_segment(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    stream_url = "http://127.0.0.1:6878/ace/getstream?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    recording_dir = Path(context.config.output.tmp_dir) / "segments"
+    recording_hls_dir = Path(context.config.output.tmp_dir) / "hls"
+    recording_dir.mkdir(parents=True)
+    recording_hls_dir.mkdir(parents=True)
+    old_segment = recording_dir / "segment_20260606T190003.mp4"
+    old_segment.write_bytes(b"old")
+
+    context.live_preview.use_existing(stream_url, recording_dir, recording_hls_dir)
+    old_time = context.live_preview.started_at - 10
+    os.utime(old_segment, (old_time, old_time))
+
+    handler = object.__new__(make_handler(context))
+    payload = handler._live_latest_payload()
+
+    assert payload["available"] is False
+    assert payload["hlsAvailable"] is False
+    assert payload["hlsReady"] is False
+    assert payload["playbackMode"] == "warming"
+
+
+def test_live_latest_payload_ignores_pre_switch_hls_playlist(tmp_path) -> None:
+    context = _make_context(tmp_path)
+    context.config.stream.hls_startup_segments = 2
+    stream_url = "http://127.0.0.1:6878/ace/getstream?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    recording_dir = Path(context.config.output.tmp_dir) / "segments"
+    recording_hls_dir = Path(context.config.output.tmp_dir) / "hls"
+    recording_dir.mkdir(parents=True)
+    recording_hls_dir.mkdir(parents=True)
+    playlist = recording_hls_dir / "stream.m3u8"
+    playlist.write_text("#EXTM3U\nlive_00001.ts\nlive_00002.ts\n", encoding="utf-8")
+
+    context.live_preview.use_existing(stream_url, recording_dir, recording_hls_dir)
+    old_time = context.live_preview.started_at - 10
+    os.utime(playlist, (old_time, old_time))
+
+    handler = object.__new__(make_handler(context))
+    payload = handler._live_latest_payload()
+
+    assert payload["available"] is False
+    assert payload["hlsAvailable"] is False
+    assert payload["hlsReady"] is False
+    assert payload["hlsSegmentCount"] == 0
+    assert payload["playbackMode"] == "warming"
 
 
 def test_live_latest_payload_reports_external_hls_without_segments(tmp_path) -> None:
@@ -285,4 +388,7 @@ def test_live_latest_payload_reports_external_hls_without_segments(tmp_path) -> 
     assert context.live_preview.status()["state"] == "external"
     assert payload["available"] is False
     assert payload["hlsAvailable"] is True
+    assert payload["hlsReady"] is True
+    assert payload["hlsSegmentCount"] is None
+    assert payload["playbackMode"] == "external_hls"
     assert payload["hlsUrl"] == "/api/live/hls/stream.m3u8"

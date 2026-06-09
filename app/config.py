@@ -24,6 +24,9 @@ class StreamConfig:
     reconnect_delay_seconds: int = 3
     rolling_buffer_seconds: int = 300
     segment_seconds: int = 2
+    live_startup_target_seconds: int = 5
+    hls_startup_segments: int = 2
+    hls_list_size: int = 6
 
 
 @dataclass

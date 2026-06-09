@@ -1,4 +1,6 @@
 from app.config import AppConfig
+from app.stream.recorder import StreamRecorder
+from app.stream.rolling_buffer import RollingBuffer
 from app.ui import live_preview as live_preview_module
 from app.ui.live_preview import LivePreviewSupervisor
 
@@ -41,3 +43,21 @@ def test_live_preview_start_clears_stale_local_hls(monkeypatch, tmp_path) -> Non
 
     assert all(not path.exists() for path in stale_paths)
     assert keep_path.exists()
+
+
+def test_stream_recorder_uses_configured_hls_stabilization_window(tmp_path) -> None:
+    cfg = AppConfig()
+    cfg.stream.hls_list_size = 5
+    recorder = StreamRecorder(
+        stream_url="http://127.0.0.1:6878/ace/getstream?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        segment_dir=str(tmp_path / "segments"),
+        stream_config=cfg.stream,
+        rolling_buffer=RollingBuffer(buffer_seconds=cfg.stream.rolling_buffer_seconds),
+        hls_dir=str(tmp_path / "hls"),
+    )
+
+    cmd = recorder._build_ffmpeg_command()
+    tee_output = cmd[-1]
+
+    assert "hls_list_size=5" in tee_output
+    assert "hls_allow_cache=0" in tee_output

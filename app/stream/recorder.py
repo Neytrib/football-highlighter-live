@@ -142,7 +142,8 @@ class StreamRecorder:
                 (
                     "[f=hls:"
                     f"hls_time={self.stream_config.segment_seconds}:"
-                    "hls_list_size=8:"
+                    f"hls_list_size={self.stream_config.hls_list_size}:"
+                    "hls_allow_cache=0:"
                     "hls_flags=delete_segments+omit_endlist+program_date_time+temp_file:"
                     f"hls_segment_filename={hls_segment_output}]"
                     f"{hls_output}"

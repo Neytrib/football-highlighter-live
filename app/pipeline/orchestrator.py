@@ -302,7 +302,7 @@ class Orchestrator:
             while True:
                 self.poll_iteration += 1
                 self._drain_crop_futures()
-                live_matches = self.client.get_live_matches()
+                live_matches = self._get_live_matches_for_poll()
                 if not live_matches:
                     self.logger.info(
                         "no live matches",
@@ -368,6 +368,23 @@ class Orchestrator:
             self._drain_crop_futures()
             self.crop_executor.shutdown(wait=False, cancel_futures=False)
             self.recorder.stop()
+
+    def _get_live_matches_for_poll(self) -> list[MatchSnapshot]:
+        try:
+            return self.client.get_live_matches()
+        except Exception as exc:
+            # Metadata failures must not starve the local player buffer.
+            self.logger.warning(
+                "football-data poll failed; keeping stream recorder alive",
+                extra={
+                    "extra": {
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "poll_iteration": self.poll_iteration,
+                    }
+                },
+            )
+            return []
 
     def _build_stream_only_match(self) -> MatchSnapshot:
         match_id = int(self.config.stream_only.match_id)
